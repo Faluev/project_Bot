@@ -1,3 +1,7 @@
+import logging
+
+import asyncio
+
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -8,6 +12,14 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
+from database import init_database
+
+logger = logging.getLogger(__name__)
+init_database()
+
+
+async def handle_application_error(update, context):
+    logger.error("Unhandled exception while processing update", exc_info=context.error)
 
 from handlers.registration import (
     FIRST_LAST_NAME,
@@ -27,6 +39,7 @@ from handlers.registration import (
 from handlers.admin import (
     get_admin_handlers,
     notify_admin_about_timeouts,
+    notify_admin_about_missing_items,
     show_my_id,
 )
 
@@ -36,8 +49,13 @@ from handlers.orders import (
     complete_assembly,
     handle_missing_item,
     show_picker_shift_report,
+    notify_pickers_about_new_orders,
+    MISSING_ITEM,
+    save_missing_item,
+    cancel_missing_item,
 )
 from handlers.shift import toggle_shift
+from handlers.language import toggle_language
 
 
 # ==========================================
@@ -49,6 +67,7 @@ application = (
     .token(BOT_TOKEN)
     .build()
 )
+application.add_error_handler(handle_application_error)
 
 
 # ==========================================
@@ -99,7 +118,7 @@ contact_admin_handler = ConversationHandler(
     entry_points=[
         MessageHandler(
             filters.TEXT
-            & filters.Regex(r"^👨‍💼 Связаться с администратором$"),
+            & filters.Regex(r"^(👨‍💼 Связаться с администратором|👨‍💼 Тамос бо администратор)$"),
             start_contact_admin,
         )
     ],
@@ -160,7 +179,7 @@ application.add_handler(
     MessageHandler(
         filters.TEXT
         & filters.Regex(
-            r"^📦 Текущие заказы$"
+            r"^(📦 Текущие заказы|📦 Фармоишҳои ҷорӣ)$"
         ),
         show_current_orders,
     )
@@ -169,7 +188,7 @@ application.add_handler(
 application.add_handler(
     MessageHandler(
         filters.TEXT
-        & filters.Regex(r"^📋 История смены$"),
+        & filters.Regex(r"^(📋 История смены|📋 Таърихи навбат)$"),
         show_picker_shift_report,
     )
 )
@@ -177,8 +196,16 @@ application.add_handler(
 application.add_handler(
     MessageHandler(
         filters.TEXT
-        & filters.Regex(r"^(🟢 Завершить смену|🔴 Начать смену)$"),
+        & filters.Regex(r"^(🟢 Завершить смену|🔴 Начать смену|🟢 Анҷоми навбат|🔴 Оғози навбат)$"),
         toggle_shift,
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.TEXT
+        & filters.Regex(r"^(🌐 Язык / Забон|🌐 Забон / Язык)$"),
+        toggle_language,
     )
 )
 
@@ -210,12 +237,21 @@ application.add_handler(
 # ТОВАРА НЕТ
 # ==========================================
 
-application.add_handler(
-    CallbackQueryHandler(
-        handle_missing_item,
-        pattern=r"^missing_item:\d+$",
-    )
+missing_item_handler = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(
+            handle_missing_item,
+            pattern=r"^missing_item:\d+$",
+        )
+    ],
+    states={
+        MISSING_ITEM: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, save_missing_item),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_missing_item)],
 )
+application.add_handler(missing_item_handler)
 
 # ==========================================
 # НАБЛЮДЕНИЕ ЗА ТАЙМАУТАМИ ЗАКАЗОВ
@@ -227,6 +263,18 @@ application.job_queue.run_repeating(
     first=30,
 )
 
+application.job_queue.run_repeating(
+    notify_admin_about_missing_items,
+    interval=30,
+    first=15,
+)
+
+application.job_queue.run_repeating(
+    notify_pickers_about_new_orders,
+    interval=30,
+    first=10,
+)
+
 # ==========================================
 # ЗАПУСКАЕМ БОТА
 # ==========================================
@@ -236,4 +284,7 @@ print(
     "Ожидаю сообщения..."
 )
 
-application.run_polling()
+if __name__ == "__main__":
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    print("Бот курьера запущен. Ожидаю сообщения...")
+    application.run_polling()

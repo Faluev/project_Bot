@@ -1,17 +1,27 @@
 from telegram import ReplyKeyboardMarkup
 
 
-def get_picker_menu(is_on_shift=False):
+def get_picker_menu(is_on_shift=False, language="ru"):
     """
     Рабочее меню сборщика.
     """
 
-    keyboard = [
-        ["📦 Текущие заказы"],
-        ["📋 История смены"],
-        ["🟢 Завершить смену" if is_on_shift else "🔴 Начать смену"],
-        ["👨‍💼 Связаться с администратором"],
-    ]
+    if language == "tg":
+        keyboard = [
+            ["📦 Фармоишҳои ҷорӣ"],
+            ["📋 Таърихи навбат"],
+            ["🟢 Анҷоми навбат" if is_on_shift else "🔴 Оғози навбат"],
+            ["👨‍💼 Тамос бо администратор"],
+            ["🌐 Забон / Язык"],
+        ]
+    else:
+        keyboard = [
+            ["📦 Текущие заказы"],
+            ["📋 История смены"],
+            ["🟢 Завершить смену" if is_on_shift else "🔴 Начать смену"],
+            ["👨‍💼 Связаться с администратором"],
+            ["🌐 Язык / Забон"],
+        ]
 
     return ReplyKeyboardMarkup(
         keyboard,
@@ -19,17 +29,27 @@ def get_picker_menu(is_on_shift=False):
     )
 
 
-def get_courier_menu(is_on_shift=False):
+def get_courier_menu(is_on_shift=False, language="ru"):
     """
     Рабочее меню курьера.
     """
 
-    keyboard = [
-        ["🚚 Текущий заказ"],
-        ["📋 Доставки за смену"],
-        ["🟢 Завершить смену" if is_on_shift else "🔴 Начать смену"],
-        ["👨‍💼 Связаться с администратором"],
-    ]
+    if language == "tg":
+        keyboard = [
+            ["🚚 Фармоиши ҷорӣ"],
+            ["📋 Доставкаҳои навбат"],
+            ["🟢 Анҷоми навбат" if is_on_shift else "🔴 Оғози навбат"],
+            ["👨‍💼 Тамос бо администратор"],
+            ["🌐 Забон / Язык"],
+        ]
+    else:
+        keyboard = [
+            ["🚚 Текущий заказ"],
+            ["📋 Доставки за смену"],
+            ["🟢 Завершить смену" if is_on_shift else "🔴 Начать смену"],
+            ["👨‍💼 Связаться с администратором"],
+            ["🌐 Язык / Забон"],
+        ]
 
     return ReplyKeyboardMarkup(
         keyboard,
@@ -37,15 +57,15 @@ def get_courier_menu(is_on_shift=False):
     )
 
 
-def get_work_menu(role, is_on_shift=False):
+def get_work_menu(role, is_on_shift=False, language="ru"):
     """
     Возвращает меню в зависимости от роли сотрудника.
     """
 
     if role == "picker":
-        return get_picker_menu(is_on_shift)
+        return get_picker_menu(is_on_shift, language)
 
     if role == "courier":
-        return get_courier_menu(is_on_shift)
+        return get_courier_menu(is_on_shift, language)
 
     return None

@@ -1,30 +1,24 @@
-from database import reset_test_employee
+import sqlite3
+from pathlib import Path
 
 
-# ==========================================
-# ВСТАВЬ СЮДА СВОЙ TELEGRAM ID
-# ==========================================
-
-TELEGRAM_ID =1489820047
+BASE_DIR = Path(__file__).resolve().parent
+DATABASE_PATH = BASE_DIR / "delivery.db"
 
 
-deleted_count = reset_test_employee(
-    TELEGRAM_ID
-)
+connection = sqlite3.connect(DATABASE_PATH)
 
+try:
+    cursor = connection.cursor()
 
-if deleted_count == 1:
-    print(
-        "✅ Тестовый сотрудник успешно сброшен."
-    )
+    cursor.execute("DELETE FROM employees")
 
-elif deleted_count == 0:
-    print(
-        "ℹ️ Сотрудник с таким Telegram ID "
-        "не найден."
-    )
+    deleted_count = cursor.rowcount
 
-else:
-    print(
-        f"⚠️ Удалено записей: {deleted_count}"
-    )
+    connection.commit()
+
+    print(f"✅ Сотрудники сброшены.")
+    print(f"Удалено сотрудников: {deleted_count}")
+
+finally:
+    connection.close()

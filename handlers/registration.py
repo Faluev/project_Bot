@@ -15,9 +15,23 @@ from database import (
 )
 
 from handlers.menu import get_work_menu
+from handlers.retry import send_message_with_retry
+from handlers.i18n import get_message
 
 # Состояния регистрации
 FIRST_LAST_NAME, PHONE, ROLE, ADMIN_CONTACT = range(4)
+COURIER_TRANSPORT = 4
+
+
+def get_preferred_language(update, context):
+    language = context.user_data.get("registration_language")
+    if language in ("ru", "tg"):
+        return language
+
+    telegram_language = (update.effective_user.language_code or "ru").split("-")[0]
+    language = "tg" if telegram_language == "tg" else "ru"
+    context.user_data["registration_language"] = language
+    return language
 
 
 def build_admin_contact_message(employee, text):
@@ -57,6 +71,19 @@ async def start_registration(
         telegram_id
     )
 
+    language = (
+        employee["language"]
+        if employee is not None
+        else get_preferred_language(update, context)
+    )
+
+    if employee is not None and employee["role"] != "picker":
+        await update.message.reply_text(
+            "⛔ Этот бот предназначен для сборщиков. "
+            "Для работы курьером зарегистрируйтесь в боте курьера."
+        )
+        return ConversationHandler.END
+
     # ==========================================
     # СОТРУДНИК ОДОБРЕН
     # ==========================================
@@ -79,13 +106,15 @@ async def start_registration(
             menu = get_work_menu(
                 employee["role"],
                 employee["is_on_shift"],
+                employee["language"],
             )
 
             await update.message.reply_text(
-                f"Здравствуйте, "
-                f"{employee['first_name']}! 👋\n\n"
-                f"Ваша роль: {role_name}\n\n"
-                "Выберите нужное действие:",
+                get_message(
+                    employee["language"],
+                    "picker_login",
+                    name=employee["first_name"],
+                ),
                 reply_markup=menu,
             )
 
@@ -98,9 +127,7 @@ async def start_registration(
         if employee["application_status"] == "pending":
 
             await update.message.reply_text(
-                "⏳ Ваша заявка ещё находится "
-                "на рассмотрении администратора.\n\n"
-                "Пожалуйста, дождитесь решения."
+                get_message(language, "registration_pending")
             )
 
             return ConversationHandler.END
@@ -109,12 +136,104 @@ async def start_registration(
     # НОВАЯ РЕГИСТРАЦИЯ
     # ==========================================
 
+    context.user_data["registration_role"] = "picker"
     await update.message.reply_text(
-        "Добро пожаловать! 👋\n\n"
-        "Для регистрации напишите ваше имя и фамилию."
+        get_message(language, "picker_welcome")
     )
 
     return FIRST_LAST_NAME
+
+
+async def start_courier_registration(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    telegram_id = update.effective_user.id
+    employee = get_employee_by_telegram_id(telegram_id)
+
+    if employee is not None and employee["role"] != "courier":
+        role_name = "сборщик" if employee["role"] == "picker" else employee["role"]
+        await update.message.reply_text(
+            f"⛔ Этот Telegram-аккаунт уже зарегистрирован как {role_name}. "
+            "Для другой роли нужен отдельный Telegram-аккаунт."
+        )
+        return ConversationHandler.END
+
+    language = (
+        employee["language"]
+        if employee is not None
+        else get_preferred_language(update, context)
+    )
+    context.user_data["registration_language"] = language
+
+    if employee is not None and employee["application_status"] == "approved":
+        if employee["is_active"] != 1:
+            await update.message.reply_text("⛔ Ваш рабочий доступ отключён.")
+            return ConversationHandler.END
+
+        await update.message.reply_text(
+            get_message(language, "registration_approved"),
+            reply_markup=get_work_menu(
+                "courier",
+                employee["is_on_shift"],
+                employee["language"],
+            ),
+        )
+        return ConversationHandler.END
+
+    if employee is not None and employee["application_status"] == "pending":
+        await update.message.reply_text(get_message(language, "registration_pending"))
+        return ConversationHandler.END
+
+    context.user_data["registration_role"] = "courier"
+    await update.message.reply_text(get_message(language, "courier_welcome"))
+    return FIRST_LAST_NAME
+
+
+async def get_courier_transport(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    transport_type = update.message.text.strip()
+    if not transport_type:
+        await update.message.reply_text(
+            get_message(
+                get_preferred_language(update, context),
+                "registration_transport_prompt",
+            )
+        )
+        return COURIER_TRANSPORT
+
+    full_name = context.user_data.get("full_name", "").strip().split(maxsplit=1)
+    if len(full_name) < 2:
+        await update.message.reply_text(
+            "Укажите имя и фамилию через пробел, затем начните регистрацию командой /start."
+        )
+        return ConversationHandler.END
+
+    result = create_employee_application(
+        telegram_id=update.effective_user.id,
+        telegram_username=update.effective_user.username,
+        first_name=full_name[0],
+        last_name=full_name[1],
+        phone=context.user_data["phone"],
+        role="courier",
+        transport_type=transport_type,
+        language=get_preferred_language(update, context),
+    )
+
+    message_key = {
+        "created": "registration_created",
+        "recreated": "registration_resubmitted",
+        "already_pending": "registration_pending",
+        "already_approved": "registration_approved",
+    }.get(result, "registration_failed")
+    await update.message.reply_text(
+        get_message(get_preferred_language(update, context), message_key)
+    )
+    context.user_data.pop("registration_role", None)
+    context.user_data.pop("registration_language", None)
+    return ConversationHandler.END
 
 async def get_name(
     update: Update,
@@ -124,10 +243,18 @@ async def get_name(
     Получаем имя и фамилию сотрудника.
     """
 
-    context.user_data["full_name"] = update.message.text
+    language = get_preferred_language(update, context)
+    full_name = update.message.text.strip()
+    if len(full_name.split(maxsplit=1)) < 2:
+        await update.message.reply_text(
+            get_message(language, "registration_invalid_name")
+        )
+        return FIRST_LAST_NAME
+
+    context.user_data["full_name"] = full_name
 
     phone_button = KeyboardButton(
-        "📱 Отправить номер телефона",
+        get_message(language, "registration_phone_button"),
         request_contact=True,
     )
 
@@ -138,9 +265,7 @@ async def get_name(
     )
 
     await update.message.reply_text(
-        "Отлично.\n\n"
-        "Теперь отправьте ваш номер телефона "
-        "нажав кнопку ниже.",
+        get_message(language, "registration_phone_prompt"),
         reply_markup=keyboard,
     )
 
@@ -158,21 +283,41 @@ async def get_phone(
     if update.message.contact:
         phone = update.message.contact.phone_number
     else:
-        phone = update.message.text
+        phone = (update.message.text or "").strip()
+
+    if not phone:
+        await update.message.reply_text(
+            get_message(
+                get_preferred_language(update, context),
+                "registration_phone_prompt",
+            )
+        )
+        return PHONE
 
     context.user_data["phone"] = phone
+    language = get_preferred_language(update, context)
+
+    if context.user_data.get("registration_role") == "courier":
+        await update.message.reply_text(
+            get_message(
+                get_preferred_language(update, context),
+                "registration_transport_prompt",
+            ),
+            reply_markup=None,
+        )
+        return COURIER_TRANSPORT
 
     keyboard = ReplyKeyboardMarkup(
-        [
-            ["👷 Сборщик"],
-            ["🚚 Курьер"],
-        ],
+        [[get_message(language, "registration_picker_role")]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )
 
     await update.message.reply_text(
-        "Выберите вашу роль:",
+        get_message(
+            get_preferred_language(update, context),
+            "registration_role_prompt",
+        ),
         reply_markup=keyboard,
     )
 
@@ -189,16 +334,12 @@ async def get_role(
     """
 
     role_text = update.message.text
+    role = context.user_data.get("registration_role")
+    language = get_preferred_language(update, context)
 
-    if "Сборщик" in role_text:
-        role = "picker"
-
-    elif "Курьер" in role_text:
-        role = "courier"
-
-    else:
+    if role != "picker" or role_text != get_message(language, "registration_picker_role"):
         await update.message.reply_text(
-            "Пожалуйста, выберите одну из кнопок."
+            get_message(language, "registration_invalid_role")
         )
         return ROLE
 
@@ -215,9 +356,7 @@ async def get_role(
     # имя и фамилию
     if len(name_parts) < 2:
         await update.message.reply_text(
-            "Пожалуйста, укажите имя и фамилию через пробел.\n\n"
-            "Например:\n"
-            "Иван Иванов"
+            get_message(language, "registration_invalid_name")
         )
 
         return FIRST_LAST_NAME
@@ -235,46 +374,21 @@ async def get_role(
         last_name=last_name,
         phone=phone,
         role=role,
+        language=language,
     )
 
-    # Обрабатываем результат
-    if result == "created":
-        message = (
-            "✅ Заявка на регистрацию создана.\n\n"
-            "Ваши данные отправлены на проверку "
-            "администратору.\n"
-            "После рассмотрения вы получите сообщение "
-            "с результатом."
-        )
-
-    elif result == "recreated":
-        message = (
-            "✅ Заявка отправлена повторно.\n\n"
-            "Ожидайте решения администратора."
-        )
-
-    elif result == "already_pending":
-        message = (
-            "ℹ️ Ваша заявка уже находится "
-            "на рассмотрении администратора."
-        )
-
-    elif result == "already_approved":
-        message = (
-            "✅ Вы уже зарегистрированы "
-            "и ваша заявка одобрена."
-        )
-
-    else:
-        message = (
-            "Произошла ошибка при сохранении заявки.\n"
-            "Попробуйте ещё раз позже."
-        )
+    message_key = {
+        "created": "registration_created",
+        "recreated": "registration_resubmitted",
+        "already_pending": "registration_pending",
+        "already_approved": "registration_approved",
+    }.get(result, "registration_failed")
 
     await update.message.reply_text(
-        message,
+        get_message(language, message_key),
         reply_markup=None,
     )
+    context.user_data.pop("registration_role", None)
 
     print(
         "Заявка сотрудника:",
@@ -282,6 +396,8 @@ async def get_role(
         telegram_id,
         role,
     )
+    context.user_data.pop("registration_role", None)
+    context.user_data.pop("registration_language", None)
 
     return ConversationHandler.END
 
@@ -348,7 +464,8 @@ async def handle_contact_admin_message(
         message_text,
     )
 
-    await context.bot.send_message(
+    await send_message_with_retry(
+        context.bot,
         chat_id=ADMIN_TELEGRAM_ID,
         text=admin_message,
     )
@@ -388,5 +505,13 @@ async def cancel_registration(
     await update.message.reply_text(
         "Регистрация отменена."
     )
+
+    for key in (
+        "registration_role",
+        "registration_language",
+        "full_name",
+        "phone",
+    ):
+        context.user_data.pop(key, None)
 
     return ConversationHandler.END

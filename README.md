@@ -7,6 +7,8 @@ Two Telegram bots for a delivery service. Both bots use one SQLite database.
 - employee registration and administrator approval;
 - picker order assembly;
 - courier pickup, delivery, and rejection with a reason;
+- automatic order notifications to employees on shift;
+- retryable alerts for missing items and courier handoff;
 - order history and administrator feed;
 - timeout alerts;
 - employee statistics and shift reports;
@@ -27,7 +29,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-4. Initialize the database and optionally create a test order:
+4. The database initializes automatically when either bot starts. Optionally, create a sample test order:
 
 ```powershell
 python create_test_order.py
@@ -55,7 +57,8 @@ The database file `delivery.db` is created locally and is intentionally ignored 
 - `/employees` - enable or disable approved employees;
 - `/orders` - view the order feed;
 - `/stats` - view employee statistics;
-- `/timeouts` - view overdue orders.
+- `/timeouts` - view overdue orders;
+- `/rejected` - resolve rejected orders.
 
 ## Tests
 

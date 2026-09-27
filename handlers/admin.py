@@ -1,8 +1,10 @@
 from telegram import (
+    Bot,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.error import BadRequest
 
 from telegram.ext import (
     CallbackQueryHandler,
@@ -10,7 +12,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import ADMIN_TELEGRAM_ID
+from config import ADMIN_TELEGRAM_ID, COURIER_BOT_TOKEN
 
 from database import (
     get_pending_applications,
@@ -22,9 +24,53 @@ from database import (
     get_employee_stats,
     get_approved_employees,
     toggle_employee_access,
+    set_employee_access,
+    get_rejected_orders,
+    resolve_rejected_order,
     log_order_timeout_alert,
+    get_pending_missing_item_alerts,
+    log_missing_item_alert_sent,
 )
 from config import ADMIN_TELEGRAM_ID, ORDER_TIMEOUT_MINUTES
+from handlers.retry import send_message_with_retry
+from handlers.i18n import get_message
+
+
+async def answer_callback_safely(query, text=None, show_alert=False):
+    try:
+        await query.answer(text=text, show_alert=show_alert)
+        return True
+    except BadRequest:
+        return False
+
+
+async def edit_callback_message_safely(query, text, reply_markup=None):
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup)
+        return True
+    except BadRequest:
+        return False
+
+
+async def notify_employee_application_result(context, employee, text):
+    if employee["role"] != "courier":
+        await send_message_with_retry(
+            context.bot,
+            chat_id=employee["telegram_id"],
+            text=text,
+        )
+        return
+
+    courier_bot = Bot(token=COURIER_BOT_TOKEN)
+    await courier_bot.initialize()
+    try:
+        await send_message_with_retry(
+            courier_bot,
+            chat_id=employee["telegram_id"],
+            text=text,
+        )
+    finally:
+        await courier_bot.shutdown()
 
 
 def is_admin(update: Update) -> bool:
@@ -105,6 +151,7 @@ async def show_applications(
             f"📱 Телефон: {employee['phone']}\n"
             f"💬 Telegram: {telegram_name}\n"
             f"🎯 Роль: {role_name}\n"
+            f"🚲 Транспорт: {employee['transport_type'] or '—'}\n"
             f"📅 Заявка: {employee['created_at']}"
         )
 
@@ -138,12 +185,12 @@ async def process_application(
 
     query = update.callback_query
 
-    # Обязательно отвечаем на callback.
-    await query.answer()
+    await answer_callback_safely(query)
 
     # Проверяем администратора
     if query.from_user.id != ADMIN_TELEGRAM_ID:
-        await query.answer(
+        await answer_callback_safely(
+            query,
             "У вас нет доступа.",
             show_alert=True,
         )
@@ -180,13 +227,10 @@ async def process_application(
         )
 
         # Сообщаем сотруднику
-        await context.bot.send_message(
-            chat_id=employee["telegram_id"],
-            text=(
-                "🎉 Ваша заявка одобрена!\n\n"
-                "Теперь вы можете пользоваться "
-                "рабочими функциями бота."
-            ),
+        await notify_employee_application_result(
+            context,
+            employee,
+            get_message(employee["language"], "application_approved_notice"),
         )
 
         return
@@ -216,14 +260,10 @@ async def process_application(
         )
 
         # Сообщаем сотруднику
-        await context.bot.send_message(
-            chat_id=employee["telegram_id"],
-            text=(
-                "❌ Ваша заявка на регистрацию "
-                "отклонена.\n\n"
-                "Если вы считаете, что это ошибка, "
-                "свяжитесь с администратором."
-            ),
+        await notify_employee_application_result(
+            context,
+            employee,
+            get_message(employee["language"], "application_rejected_notice"),
         )
 
         return
@@ -264,6 +304,11 @@ async def show_orders_feed(
         status = get_status_label(order["status"])
         picker = order["picker_name"] or "—"
         courier = order["courier_name"] or "—"
+        total_time = (
+            f"Общее время: {order['total_delivery_minutes']} мин.\n"
+            if order["total_delivery_minutes"] is not None
+            else ""
+        )
 
         text = (
             f"📦 Заказ № {order['order_number']}\n"
@@ -273,6 +318,7 @@ async def show_orders_feed(
             f"Сборщик: {picker}\n"
             f"Курьер: {courier}\n"
             f"Сумма: {order['payment_amount']}\n"
+            f"{total_time}"
             f"Обновлён: {order['updated_at']}\n"
         )
 
@@ -299,16 +345,24 @@ async def show_order_history(
     Показывает историю статусов конкретного заказа.
     """
     query = update.callback_query
-    await query.answer()
+    await answer_callback_safely(query)
 
     if query.from_user.id != ADMIN_TELEGRAM_ID:
-        await query.answer("У вас нет доступа.", show_alert=True)
+        await answer_callback_safely(
+            query,
+            "У вас нет доступа.",
+            show_alert=True,
+        )
         return
 
     try:
         order_id = int(query.data.split(":", 1)[1])
     except (IndexError, ValueError):
-        await query.answer("Некорректный ID заказа.", show_alert=True)
+        await answer_callback_safely(
+            query,
+            "Некорректный ID заказа.",
+            show_alert=True,
+        )
         return
 
     order_history = get_order_history(order_id)
@@ -440,7 +494,10 @@ async def show_employees(
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 f"{'⛔' if employee['is_active'] else '✅'} {action_label}",
-                callback_data=f"employee_access:{employee['id']}",
+                callback_data=(
+                    f"employee_access:{employee['id']}:"
+                    f"{0 if employee['is_active'] else 1}"
+                ),
             )]
         ])
         await update.message.reply_text(
@@ -456,27 +513,114 @@ async def process_employee_access(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     query = update.callback_query
-    await query.answer()
+    await answer_callback_safely(query)
 
     if query.from_user.id != ADMIN_TELEGRAM_ID:
-        await query.answer("У вас нет доступа.", show_alert=True)
+        await answer_callback_safely(
+            query,
+            "У вас нет доступа.",
+            show_alert=True,
+        )
         return
 
     try:
-        employee_id = int(query.data.split(":", 1)[1])
+        _, employee_id_text, desired_access_text = query.data.split(":", 2)
+        employee_id = int(employee_id_text)
+        desired_access = int(desired_access_text)
     except (IndexError, ValueError):
-        await query.answer("Некорректный ID сотрудника.", show_alert=True)
+        await edit_callback_message_safely(
+            query,
+            "ℹ️ Кнопка устарела. Откройте список заново командой /employees.",
+        )
         return
 
-    employee = toggle_employee_access(employee_id)
+    employee = set_employee_access(employee_id, desired_access)
     if employee is None:
-        await query.edit_message_text("ℹ️ Сотрудник не найден или уже не активен.")
+        await edit_callback_message_safely(
+            query,
+            "ℹ️ Сотрудник не найден или больше не одобрен.",
+        )
         return
 
     access_label = "включён" if employee["is_active"] else "отключён"
-    await query.edit_message_text(
+    await edit_callback_message_safely(
+        query,
         f"✅ Доступ сотрудника {employee['first_name']} "
         f"{employee['last_name']} {access_label}."
+    )
+
+
+async def show_rejected_orders(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ У вас нет доступа к этому разделу.")
+        return
+
+    orders = get_rejected_orders()
+    if not orders:
+        await update.message.reply_text("✅ Необработанных отклонённых заказов нет.")
+        return
+
+    for order in orders:
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "↩️ Вернуть на склад",
+                    callback_data=f"rejected_resolution:{order['id']}:return_to_stock",
+                ),
+                InlineKeyboardButton(
+                    "🗑 Списать",
+                    callback_data=f"rejected_resolution:{order['id']}:write_off",
+                ),
+            ]
+        ])
+        await update.message.reply_text(
+            f"⚠️ Заказ № {order['order_number']} отклонён\n"
+            f"Клиент: {order['client_name']}\n"
+            f"Причина: {order['rejection_details'] or 'не указана'}",
+            reply_markup=keyboard,
+        )
+
+
+async def process_rejected_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_TELEGRAM_ID:
+        await answer_callback_safely(
+            query,
+            "У вас нет доступа.",
+            show_alert=True,
+        )
+        return
+
+    await answer_callback_safely(query)
+    try:
+        _, order_id_text, resolution = query.data.split(":", 2)
+        order_id = int(order_id_text)
+    except (ValueError, IndexError):
+        await query.edit_message_text("❌ Некорректное решение по заказу.")
+        return
+
+    result = resolve_rejected_order(
+        order_id,
+        resolution,
+        admin_telegram_id=query.from_user.id,
+    )
+    if not result["success"]:
+        await query.edit_message_text("ℹ️ По этому заказу решение уже принято.")
+        return
+
+    resolution_text = (
+        "товар возвращён на склад"
+        if resolution == "return_to_stock"
+        else "товар списан"
+    )
+    await query.edit_message_text(
+        f"✅ По заказу № {result['order_number']} принято решение: {resolution_text}."
     )
 
 
@@ -501,7 +645,8 @@ async def notify_admin_about_timeouts(context: ContextTypes.DEFAULT_TYPE):
             f"Заказ не был взят в работу более {ORDER_TIMEOUT_MINUTES} минут."
         )
 
-        await context.bot.send_message(
+        await send_message_with_retry(
+            context.bot,
             chat_id=ADMIN_TELEGRAM_ID,
             text=text,
         )
@@ -511,6 +656,25 @@ async def notify_admin_about_timeouts(context: ContextTypes.DEFAULT_TYPE):
             order["status"],
             ORDER_TIMEOUT_MINUTES,
         )
+
+
+async def notify_admin_about_missing_items(
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    for event in get_pending_missing_item_alerts():
+        text = (
+            f"⚠️ Сборщик отметил отсутствие товара в заказе № {event['order_number']}\n"
+            f"Позиция: {event['details']}\n"
+            f"Сборщик: {event['picker_name'] or 'неизвестен'}\n"
+            f"Время: {event['created_at']}\n"
+            "Заказ остался на сборке; можно продолжить сборку или уточнить замену."
+        )
+        await send_message_with_retry(
+            context.bot,
+            chat_id=ADMIN_TELEGRAM_ID,
+            text=text,
+        )
+        log_missing_item_alert_sent(event["event_id"], event["order_id"])
 
 
 def get_admin_handlers():
@@ -537,6 +701,7 @@ def get_admin_handlers():
             show_employee_stats,
         ),
         CommandHandler("employees", show_employees),
+        CommandHandler("rejected", show_rejected_orders),
         CallbackQueryHandler(
             process_application,
             pattern=r"^(approve|reject):\d+$",
@@ -547,6 +712,10 @@ def get_admin_handlers():
         ),
         CallbackQueryHandler(
             process_employee_access,
-            pattern=r"^employee_access:\d+$",
+            pattern=r"^employee_access:\d+:[01]$",
+        ),
+        CallbackQueryHandler(
+            process_rejected_order,
+            pattern=r"^rejected_resolution:\d+:(return_to_stock|write_off)$",
         ),
     ]

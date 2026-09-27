@@ -1,3 +1,7 @@
+import logging
+
+import asyncio
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,14 +14,29 @@ from telegram.ext import (
 )
 
 from config import COURIER_BOT_TOKEN
-from database import get_employee_by_telegram_id
+from database import get_employee_by_telegram_id, init_database
+
+logger = logging.getLogger(__name__)
+init_database()
+
+
+async def handle_application_error(update, context):
+    logger.error("Unhandled exception while processing update", exc_info=context.error)
 
 from handlers.menu import get_courier_menu
 from handlers.registration import (
     ADMIN_CONTACT,
+    FIRST_LAST_NAME,
+    PHONE,
+    COURIER_TRANSPORT,
     start_contact_admin,
     handle_contact_admin_message,
     cancel_contact_admin,
+    start_courier_registration,
+    get_name,
+    get_phone,
+    get_courier_transport,
+    cancel_registration,
 )
 from handlers.courier_orders import (
     show_courier_orders,
@@ -27,8 +46,14 @@ from handlers.courier_orders import (
     handle_reject_order,
     handle_reject_reason,
     show_courier_shift_report,
+    notify_couriers_about_waiting_orders,
+    REJECTION_REASON,
+    save_custom_rejection_reason,
+    cancel_custom_rejection_reason,
 )
 from handlers.shift import toggle_shift
+from handlers.language import toggle_language
+from handlers.i18n import get_message
 
 
 async def start(
@@ -42,14 +67,13 @@ async def start(
     )
 
     if employee is None:
-        await update.message.reply_text(
-            "👋 Добро пожаловать!\n\n"
-            "Вы ещё не зарегистрированы "
-            "как сотрудник.\n\n"
-            "Пройдите регистрацию через "
-            "бота сборщика."
-        )
-        return
+        return await start_courier_registration(update, context)
+
+    if (
+        employee["role"] == "courier"
+        and employee["application_status"] == "rejected"
+    ):
+        return await start_courier_registration(update, context)
 
     if employee["application_status"] == "pending":
         await update.message.reply_text(
@@ -67,8 +91,7 @@ async def start(
 
     if employee["is_active"] != 1:
         await update.message.reply_text(
-            "⛔ Ваш доступ к рабочей системе "
-            "отключён."
+                get_message(employee["language"], "disabled_access")
         )
         return
 
@@ -81,13 +104,17 @@ async def start(
         )
         return
 
-    menu = get_courier_menu(employee["is_on_shift"])
+    menu = get_courier_menu(
+        employee["is_on_shift"],
+        employee["language"],
+    )
 
     await update.message.reply_text(
-        f"Здравствуйте, "
-        f"{employee['first_name']}! 👋\n\n"
-        "🚚 Вы вошли как курьер.\n\n"
-        "Выберите нужное действие:",
+        get_message(
+            employee["language"],
+            "courier_login",
+            name=employee["first_name"],
+        ),
         reply_markup=menu,
     )
 
@@ -97,20 +124,35 @@ application = (
     .token(COURIER_BOT_TOKEN)
     .build()
 )
+application.add_error_handler(handle_application_error)
 
 
-application.add_handler(
-    CommandHandler(
-        "start",
-        start,
-    )
+courier_registration_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        FIRST_LAST_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_name),
+        ],
+        PHONE: [
+            MessageHandler(
+                filters.CONTACT | (filters.TEXT & ~filters.COMMAND),
+                get_phone,
+            ),
+        ],
+        COURIER_TRANSPORT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_courier_transport),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_registration)],
 )
+
+application.add_handler(courier_registration_handler)
 
 admin_contact_handler = ConversationHandler(
     entry_points=[
         MessageHandler(
             filters.TEXT
-            & filters.Regex(r"^👨‍💼 Связаться с администратором$"),
+            & filters.Regex(r"^(👨‍💼 Связаться с администратором|👨‍💼 Тамос бо администратор)$"),
             start_contact_admin,
         )
     ],
@@ -133,7 +175,7 @@ application.add_handler(
     MessageHandler(
         filters.TEXT
         & filters.Regex(
-            r"^🚚 Текущий заказ$"
+            r"^(🚚 Текущий заказ|🚚 Фармоиши ҷорӣ)$"
         ),
         show_courier_orders,
     )
@@ -142,7 +184,7 @@ application.add_handler(
 application.add_handler(
     MessageHandler(
         filters.TEXT
-        & filters.Regex(r"^📋 Доставки за смену$"),
+        & filters.Regex(r"^(📋 Доставки за смену|📋 Доставкаҳои навбат)$"),
         show_courier_shift_report,
     )
 )
@@ -150,8 +192,16 @@ application.add_handler(
 application.add_handler(
     MessageHandler(
         filters.TEXT
-        & filters.Regex(r"^(🟢 Завершить смену|🔴 Начать смену)$"),
+        & filters.Regex(r"^(🟢 Завершить смену|🔴 Начать смену|🟢 Анҷоми навбат|🔴 Оғози навбат)$"),
         toggle_shift,
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.TEXT
+        & filters.Regex(r"^(🌐 Язык / Забон|🌐 Забон / Язык)$"),
+        toggle_language,
     )
 )
 
@@ -183,11 +233,29 @@ application.add_handler(
     )
 )
 
-application.add_handler(
-    CallbackQueryHandler(
-        handle_reject_reason,
-        pattern=r"^reject_reason:\d+:[a-z_]+$",
-    )
+rejection_reason_handler = ConversationHandler(
+    entry_points=[
+        CallbackQueryHandler(
+            handle_reject_reason,
+            pattern=r"^reject_reason:\d+:[a-z_]+$",
+        )
+    ],
+    states={
+        REJECTION_REASON: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                save_custom_rejection_reason,
+            ),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_custom_rejection_reason)],
+)
+application.add_handler(rejection_reason_handler)
+
+application.job_queue.run_repeating(
+    notify_couriers_about_waiting_orders,
+    interval=30,
+    first=10,
 )
 
 print(
@@ -195,4 +263,7 @@ print(
     "Ожидаю сообщения..."
 )
 
-application.run_polling()
+if __name__ == "__main__":
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    print("Бот курьера запущен. Ожидаю сообщения...")
+    application.run_polling()

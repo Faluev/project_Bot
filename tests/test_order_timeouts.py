@@ -1,14 +1,21 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import database
 from handlers.courier_orders import build_client_contact_message
 from handlers.registration import build_admin_contact_message
+from handlers.retry import send_message_with_retry
+from handlers.i18n import MESSAGES
 
 
 class OrderTimeoutTests(unittest.TestCase):
+    def test_translation_catalogs_have_matching_keys(self):
+        self.assertEqual(set(MESSAGES["ru"]), set(MESSAGES["tg"]))
+
     def test_get_order_timeouts_detects_stale_orders(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = f"{temp_dir}/test_delivery.db"
@@ -28,7 +35,9 @@ class OrderTimeoutTests(unittest.TestCase):
                 (1001, "Тест", "Сборщик", "+70000000001", "picker"),
             )
 
-            stale_time = (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+            stale_time = (
+                datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=30)
+            ).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 """
                 INSERT INTO orders (
@@ -118,6 +127,13 @@ class OrderTimeoutTests(unittest.TestCase):
                 INSERT INTO action_log (order_id, employee_id, action, old_status, new_status, details)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
+                (1, 2, "pickup_order", "awaiting_courier", "in_delivery", "Забрал"),
+            )
+            conn.execute(
+                """
+                INSERT INTO action_log (order_id, employee_id, action, old_status, new_status, details)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 (1, 2, "deliver_order", "in_delivery", "delivered", "Доставлен"),
             )
             conn.commit()
@@ -182,6 +198,416 @@ class OrderTimeoutTests(unittest.TestCase):
             employee = database.toggle_employee_access(1)
             self.assertEqual(employee["is_active"], 1)
             self.assertEqual(employee["is_on_shift"], 0)
+
+    def test_set_employee_access_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/test_delivery.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (?, ?, ?, ?, 'approved', 1, 1)
+                """,
+                (3005, "Саид", "Юсуфов", "courier"),
+            )
+            connection.commit()
+            connection.close()
+
+            first = database.set_employee_access(1, 0)
+            second = database.set_employee_access(1, 0)
+            self.assertEqual(first["is_active"], 0)
+            self.assertEqual(first["is_on_shift"], 0)
+            self.assertEqual(second["is_active"], 0)
+
+            enabled = database.set_employee_access(1, 1)
+            self.assertEqual(enabled["is_active"], 1)
+
+    def test_rejected_order_can_be_resolved_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/test_delivery.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active
+                ) VALUES (?, ?, ?, ?, 'approved', 1)
+                """,
+                (3003, "Фарид", "Саидов", "courier"),
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id
+                ) VALUES (?, ?, 'rejected', 1)
+                """,
+                ("REJECT-1", "Клиент"),
+            )
+            connection.execute(
+                """
+                INSERT INTO action_log (
+                    order_id, employee_id, action,
+                    old_status, new_status, details
+                ) VALUES (1, 1, 'reject_order', 'in_delivery', 'rejected', ?)
+                """,
+                ("Причина: клиент не вышел",),
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.resolve_rejected_order(1, "return_to_stock")
+            self.assertTrue(result["success"])
+            self.assertEqual(result["resolution"], "return_to_stock")
+
+            second_result = database.resolve_rejected_order(1, "write_off")
+            self.assertFalse(second_result["success"])
+            self.assertEqual(second_result["reason"], "already_resolved")
+
+    def test_new_order_notification_is_not_repeated_for_picker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/test_delivery.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (?, ?, ?, 'picker', 'approved', 1, 1)
+                """,
+                (3004, "Малика", "Хакимова"),
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (order_number, client_name, status)
+                VALUES (?, ?, 'new')
+                """,
+                ("NEW-1", "Клиент"),
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertEqual(len(database.get_on_shift_pickers()), 1)
+            self.assertEqual(len(database.get_unnotified_new_orders(1)), 1)
+            self.assertTrue(database.log_new_order_notification(1, 1))
+            self.assertEqual(len(database.get_unnotified_new_orders(1)), 0)
+            self.assertFalse(database.log_new_order_notification(1, 1))
+
+    def test_send_message_with_retry_recovers_from_transient_failure(self):
+        class FakeBot:
+            def __init__(self):
+                self.attempts = 0
+
+            async def send_message(self, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise ConnectionError("temporary failure")
+                return kwargs["text"]
+
+        bot = FakeBot()
+        result = asyncio.run(
+            send_message_with_retry(bot, 123, "test", attempts=2)
+        )
+
+        self.assertEqual(result, "test")
+        self.assertEqual(bot.attempts, 2)
+
+    def test_create_courier_application_saves_transport_type(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/test_delivery.db"
+            database.init_database()
+
+            result = database.create_employee_application(
+                telegram_id=4001,
+                telegram_username="courier_test",
+                first_name="Саид",
+                last_name="Каримов",
+                phone="+992900000001",
+                role="courier",
+                transport_type="велосипед",
+                language="tg",
+            )
+
+            employee = database.get_employee_by_telegram_id(4001)
+            self.assertEqual(result, "created")
+            self.assertEqual(employee["role"], "courier")
+            self.assertEqual(employee["transport_type"], "велосипед")
+            self.assertEqual(employee["language"], "tg")
+
+    def test_full_order_lifecycle_and_access_invariants(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/lifecycle.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (101, 'Picker', 'One', 'picker', 'approved', 1, 1)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (102, 'Courier', 'One', 'courier', 'approved', 1, 1)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, delivery_address, status
+                ) VALUES ('FLOW-1', 'Client', 'Address', 'new')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(database.start_order_assembly(1, 1)["success"])
+            self.assertFalse(database.start_order_assembly(1, 1)["success"])
+
+            missing = database.mark_order_missing_item(1, 1, "Milk")
+            self.assertTrue(missing["success"])
+            self.assertEqual(database.get_order_by_id(1)["status"], "assembling")
+            self.assertEqual(len(database.get_pending_missing_item_alerts()), 1)
+
+            self.assertTrue(database.complete_order_assembly(1, 1)["success"])
+            self.assertFalse(database.complete_order_assembly(1, 1)["success"])
+            self.assertEqual(database.get_order_by_id(1)["status"], "awaiting_courier")
+            self.assertEqual(len(database.get_unnotified_courier_orders(2)), 1)
+            self.assertTrue(database.log_courier_order_notification(1, 2))
+            self.assertEqual(len(database.get_unnotified_courier_orders(2)), 0)
+
+            self.assertTrue(database.pickup_order(1, 2)["success"])
+            self.assertFalse(database.pickup_order(1, 2)["success"])
+            self.assertTrue(database.deliver_order(1, 2)["success"])
+            self.assertFalse(database.deliver_order(1, 2)["success"])
+            self.assertEqual(database.get_order_by_id(1)["status"], "delivered")
+            feed_order = next(
+                item for item in database.get_admin_orders_feed()
+                if item["id"] == 1
+            )
+            self.assertIsNotNone(feed_order["total_delivery_minutes"])
+
+            history = database.get_order_history(1)
+            self.assertEqual(
+                [event["action"] for event in history if event["employee_name"]],
+                [
+                    "start_assembly",
+                    "missing_item",
+                    "complete_assembly",
+                    "courier_order_notification",
+                    "pickup_order",
+                    "deliver_order",
+                ],
+            )
+
+            courier_stats = next(
+                item for item in database.get_employee_stats()
+                if item["role"] == "courier"
+            )
+            self.assertEqual(courier_stats["delivery_count"], 1)
+            self.assertIsNotNone(courier_stats["avg_delivery_minutes"])
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, delivery_address,
+                    status, courier_id
+                ) VALUES ('FLOW-2', 'Client 2', 'Address 2', 'in_delivery', 2)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            rejected = database.reject_order(2, 2, "Мизоҷ ҷавоб надод")
+            self.assertTrue(rejected["success"])
+            self.assertEqual(len(database.get_rejected_orders()), 1)
+            resolution = database.resolve_rejected_order(
+                2,
+                "return_to_stock",
+                admin_telegram_id=9001,
+            )
+            self.assertTrue(resolution["success"])
+            self.assertEqual(database.get_rejected_orders(), [])
+            resolved_event = database.get_order_history(2)[-1]
+            self.assertIn("9001", resolved_event["details"])
+
+    def test_database_rejects_order_actions_off_shift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/off_shift.db"
+            database.init_database()
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (201, 'Picker', 'Off', 'picker', 'approved', 1, 0)
+                """
+            )
+            connection.execute(
+                "INSERT INTO orders (order_number, status) VALUES ('OFF-1', 'new')"
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.start_order_assembly(1, 1)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "off_shift")
+            self.assertEqual(database.get_order_by_id(1)["status"], "new")
+
+    def test_concurrent_picker_claim_assigns_order_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/concurrent.db"
+            database.init_database()
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.executemany(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (?, ?, ?, 'picker', 'approved', 1, 1)
+                """,
+                [(501, "Picker", "One"), (502, "Picker", "Two")],
+            )
+            connection.executemany(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (?, ?, ?, 'courier', 'approved', 1, 1)
+                """,
+                [(503, "Courier", "One"), (504, "Courier", "Two")],
+            )
+            connection.execute(
+                "INSERT INTO orders (order_number, status) VALUES ('RACE-1', 'new')"
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (order_number, status, picker_id)
+                VALUES ('RACE-2', 'awaiting_courier', 1)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(
+                    lambda employee_id: database.start_order_assembly(1, employee_id),
+                    (1, 2),
+                ))
+
+            self.assertEqual(sum(result["success"] for result in results), 1)
+            history = database.get_order_history(1)
+            self.assertEqual(
+                sum(event["action"] == "start_assembly" for event in history),
+                1,
+            )
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                pickup_results = list(executor.map(
+                    lambda employee_id: database.pickup_order(2, employee_id),
+                    (3, 4),
+                ))
+
+            self.assertEqual(sum(result["success"] for result in pickup_results), 1)
+            self.assertEqual(database.get_order_by_id(2)["status"], "in_delivery")
+
+    def test_existing_database_migrates_employee_and_order_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/legacy.db"
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.executescript(
+                """
+                CREATE TABLE employees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER UNIQUE NOT NULL,
+                    telegram_username TEXT,
+                    first_name TEXT NOT NULL,
+                    last_name TEXT NOT NULL,
+                    phone TEXT,
+                    role TEXT NOT NULL,
+                    transport_type TEXT,
+                    application_status TEXT NOT NULL DEFAULT 'pending',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_number TEXT UNIQUE NOT NULL,
+                    client_name TEXT,
+                    client_phone TEXT,
+                    delivery_address TEXT,
+                    client_comment TEXT,
+                    payment_method TEXT,
+                    payment_amount REAL,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    picker_id INTEGER,
+                    courier_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            database.init_database()
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            employee_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(employees)")
+            }
+            order_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(orders)")
+            }
+            connection.close()
+
+            self.assertTrue({"is_on_shift", "language"}.issubset(employee_columns))
+            self.assertIn("client_telegram_id", order_columns)
+
+    def test_missing_item_alert_is_pending_until_logged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/missing_alert.db"
+            database.init_database()
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (601, 'Picker', 'One', 'picker', 'approved', 1, 1)
+                """
+            )
+            connection.execute(
+                "INSERT INTO orders (order_number, status, picker_id) VALUES ('MISS-1', 'assembling', 1)"
+            )
+            connection.execute(
+                """
+                INSERT INTO action_log (
+                    order_id, employee_id, action, old_status, new_status, details
+                ) VALUES (1, 1, 'missing_item', 'assembling', 'assembling', 'Missing: Milk')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            alerts = database.get_pending_missing_item_alerts()
+            self.assertEqual(len(alerts), 1)
+            self.assertEqual(alerts[0]["details"], "Missing: Milk")
+            self.assertTrue(database.log_missing_item_alert_sent(alerts[0]["event_id"], 1))
+            self.assertEqual(database.get_pending_missing_item_alerts(), [])
 
 
 if __name__ == "__main__":

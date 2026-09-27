@@ -1,9 +1,11 @@
+import logging
+
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 
 from config import ADMIN_TELEGRAM_ID
 from database import (
@@ -14,7 +16,49 @@ from database import (
     deliver_order,
     reject_order,
     get_employee_shift_report,
+    get_on_shift_couriers,
+    get_unnotified_courier_orders,
+    log_courier_order_notification,
 )
+from handlers.i18n import get_message
+from handlers.retry import send_message_with_retry
+
+logger = logging.getLogger(__name__)
+REJECTION_REASON = 6
+
+
+async def notify_customer_status(context, order_id, language, message_key):
+    order = get_order_by_id(order_id)
+    if order is None or not order["client_telegram_id"]:
+        return
+
+    try:
+        await send_message_with_retry(
+            context.bot,
+            chat_id=order["client_telegram_id"],
+            text=get_message(
+                language,
+                message_key,
+                order_number=order["order_number"],
+            ),
+        )
+    except Exception:
+        logger.exception("Could not notify client for order %s", order_id)
+
+
+async def notify_admin_about_rejection(context, order_id, order_number, reason):
+    try:
+        await send_message_with_retry(
+            context.bot,
+            chat_id=ADMIN_TELEGRAM_ID,
+            text=(
+                f"⚠️ Курьер отклонил заказ № {order_number}.\n"
+                f"Причина: {reason}\n"
+                "Решение по товару: команда /rejected"
+            ),
+        )
+    except Exception:
+        logger.exception("Could not notify admin about rejected order %s", order_id)
 
 
 def build_client_contact_message(order, custom_message):
@@ -34,22 +78,73 @@ def build_client_contact_message(order, custom_message):
     )
 
 
+async def notify_couriers_about_waiting_orders(
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Deliver awaiting-courier orders to active couriers on shift."""
+    for employee in get_on_shift_couriers():
+        for order in get_unnotified_courier_orders(employee["id"]):
+            payment = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
+            comment = (
+                get_message(employee["language"], "comment", comment=order["client_comment"])
+                if order["client_comment"]
+                else ""
+            )
+            text = get_message(
+                employee["language"],
+                "courier_order",
+                order_number=order["order_number"],
+                client_name=order["client_name"],
+                phone=order["client_phone"],
+                address=order["delivery_address"],
+                comment=comment,
+                payment=payment,
+                amount=order["payment_amount"],
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    get_message(employee["language"], "pickup_button"),
+                    callback_data=f"pickup_order:{order['id']}",
+                )
+            ]])
+
+            try:
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=employee["telegram_id"],
+                    text=text,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                continue
+
+            log_courier_order_notification(order["id"], employee["id"])
+
+
 async def show_courier_shift_report(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     employee = get_employee_by_telegram_id(update.effective_user.id)
 
-    if employee is None or employee["role"] != "courier":
+    if (
+        employee is None
+        or employee["role"] != "courier"
+        or employee["application_status"] != "approved"
+        or employee["is_active"] != 1
+    ):
         await update.message.reply_text("⛔ Раздел доступен только курьерам.")
         return
 
     report = get_employee_shift_report(employee["id"])
     await update.message.reply_text(
-        "📋 Доставки за смену\n\n"
-        f"Доставлено заказов: {report['delivery_count']}\n"
-        f"Отклонено заказов: {report['rejection_count']}\n"
-        f"Действий за сегодня: {len(report['actions'])}"
+        get_message(
+            employee["language"],
+            "courier_shift",
+            deliveries=report["delivery_count"],
+            rejections=report["rejection_count"],
+            actions=len(report["actions"]),
+        )
     )
 
 
@@ -66,34 +161,34 @@ async def show_courier_orders(
 
     if employee is None:
         await update.message.reply_text(
-            "⛔ Вы не зарегистрированы "
-            "как сотрудник."
+            get_message("ru", "not_registered")
         )
         return
 
     # Проверяем одобрение
     if employee["application_status"] != "approved":
         await update.message.reply_text(
-            "⛔ Ваша заявка ещё не одобрена."
+            get_message(employee["language"], "not_approved")
         )
         return
 
     # Проверяем активность
     if employee["is_active"] != 1:
         await update.message.reply_text(
-            "⛔ Ваш рабочий доступ отключён."
+            get_message(employee["language"], "access_disabled")
         )
         return
 
     if employee["is_on_shift"] != 1:
-        await update.message.reply_text("🔴 Сначала начните смену.")
+        await update.message.reply_text(
+            get_message(employee["language"], "start_shift")
+        )
         return
 
     # Проверяем роль
     if employee["role"] != "courier":
         await update.message.reply_text(
-            "⛔ Этот раздел предназначен "
-            "только для курьеров."
+            get_message(employee["language"], "wrong_role")
         )
         return
 
@@ -102,40 +197,38 @@ async def show_courier_orders(
 
     if not orders:
         await update.message.reply_text(
-            "🚚 Сейчас заказов для курьера нет."
+            get_message(employee["language"], "empty_courier_orders")
         )
         return
 
     for order in orders:
-
-        message = (
-            f"🚚 Заказ № {order['order_number']}\n\n"
-            f"👤 Клиент: {order['client_name']}\n"
-            f"📞 Телефон: {order['client_phone']}\n\n"
-            f"📍 Адрес доставки:\n"
-            f"{order['delivery_address']}\n"
-        )
-
-        if order["client_comment"]:
-            message += (
-                f"\n💬 Комментарий клиента:\n"
-                f"{order['client_comment']}\n"
-            )
 
         if order["payment_method"] == "cash":
             payment_text = "Наличные"
         else:
             payment_text = order["payment_method"]
 
-        message += (
-            f"\n💳 Оплата: {payment_text}\n"
-            f"💰 Сумма: {order['payment_amount']}\n"
+        comment = (
+            f"💬 Комментарий клиента: {order['client_comment']}"
+            if order["client_comment"]
+            else ""
+        )
+        message = get_message(
+            employee["language"],
+            "courier_order",
+            order_number=order["order_number"],
+            client_name=order["client_name"],
+            phone=order["client_phone"],
+            address=order["delivery_address"],
+            comment=comment,
+            payment=payment_text,
+            amount=order["payment_amount"],
         )
 
         keyboard = [
             [
                 InlineKeyboardButton(
-                    "🚚 Забрал заказ",
+                    get_message(employee["language"], "pickup_button"),
                     callback_data=(
                         f"pickup_order:{order['id']}"
                     ),
@@ -164,29 +257,32 @@ async def handle_pickup_order(
     employee = get_employee_by_telegram_id(telegram_id)
 
     if employee is None:
-        await query.answer("Вы не зарегистрированы.", show_alert=True)
+        language = "tg" if query.from_user.language_code == "tg" else "ru"
+        await query.answer(get_message(language, "not_registered"), show_alert=True)
         return
 
+    language = employee["language"]
+
     if employee["application_status"] != "approved":
-        await query.answer("Ваша заявка не одобрена.", show_alert=True)
+        await query.answer(get_message(language, "not_approved"), show_alert=True)
         return
 
     if employee["is_active"] != 1:
-        await query.answer("Ваш рабочий доступ отключён.", show_alert=True)
+        await query.answer(get_message(language, "access_disabled"), show_alert=True)
         return
 
     if employee["is_on_shift"] != 1:
-        await query.answer("Сначала начните смену.", show_alert=True)
+        await query.answer(get_message(language, "start_shift"), show_alert=True)
         return
 
     if employee["role"] != "courier":
-        await query.answer("Эта кнопка доступна только курьеру.", show_alert=True)
+        await query.answer(get_message(language, "wrong_role"), show_alert=True)
         return
 
     try:
         order_id = int(query.data.split(":")[1])
     except (IndexError, ValueError):
-        await query.answer("Некорректный номер заказа.", show_alert=True)
+        await query.answer(get_message(language, "invalid_order"), show_alert=True)
         return
 
     result = pickup_order(order_id, employee["id"])
@@ -203,28 +299,38 @@ async def handle_pickup_order(
         return
 
     order_number = result["order_number"]
+    await query.answer(
+        get_message(employee["language"], "picked_alert"),
+        show_alert=True,
+    )
+    await notify_customer_status(
+        context,
+        order_id,
+        employee["language"],
+        "client_in_delivery",
+    )
     delivery_keyboard = [[
         InlineKeyboardButton(
-            "✅ Доставлен",
+            get_message(employee["language"], "deliver_button"),
             callback_data=f"deliver_order:{order_id}",
         ),
         InlineKeyboardButton(
-            "❌ Заказ отклонён",
+            get_message(employee["language"], "reject_button"),
             callback_data=f"reject_order:{order_id}",
         ),
     ], [
         InlineKeyboardButton(
-            "📨 Связаться с клиентом",
+            get_message(employee["language"], "contact_button"),
             callback_data=f"contact_client:{order_id}",
         )
     ]]
 
-    await query.answer("✅ Заказ у вас!", show_alert=True)
-
     await query.edit_message_text(
-        f"🚚 Заказ № {order_number}\n\n"
-        "✅ Вы забрали заказ. Статус: «В пути».\n\n"
-        "Когда клиент получит заказ, нажмите кнопку ниже.",
+        get_message(
+            employee["language"],
+            "picked_order",
+            order_number=order_number,
+        ),
         reply_markup=InlineKeyboardMarkup(delivery_keyboard),
     )
 
@@ -243,26 +349,39 @@ async def handle_contact_client(
 
     employee = get_employee_by_telegram_id(telegram_id)
     if employee is None:
-        await query.answer("Вы не зарегистрированы.", show_alert=True)
+        language = "tg" if query.from_user.language_code == "tg" else "ru"
+        await query.answer(get_message(language, "not_registered"), show_alert=True)
         return
 
+    language = employee["language"]
     if employee["application_status"] != "approved":
-        await query.answer("Ваша заявка не одобрена.", show_alert=True)
+        await query.answer(get_message(language, "not_approved"), show_alert=True)
+        return
+
+    if employee["is_active"] != 1 or employee["is_on_shift"] != 1:
+        await query.answer(get_message(language, "start_shift"), show_alert=True)
         return
 
     if employee["role"] != "courier":
-        await query.answer("Эта кнопка доступна только курьеру.", show_alert=True)
+        await query.answer(get_message(language, "wrong_role"), show_alert=True)
         return
 
     try:
         order_id = int(query.data.split(":", 1)[1])
     except (IndexError, ValueError):
-        await query.answer("Некорректный номер заказа.", show_alert=True)
+        await query.answer(get_message(language, "invalid_order"), show_alert=True)
         return
 
     order = get_order_by_id(order_id)
     if order is None:
-        await query.answer("❌ Заказ не найден.", show_alert=True)
+        await query.answer(
+            get_message(employee["language"], "order_not_found"),
+            show_alert=True,
+        )
+        return
+
+    if order["courier_id"] != employee["id"] or order["status"] != "in_delivery":
+        await query.answer(get_message(language, "not_courier"), show_alert=True)
         return
 
     message_text = build_client_contact_message(
@@ -275,18 +394,21 @@ async def handle_contact_client(
         client_telegram_id = order["client_telegram_id"]
 
     if client_telegram_id:
-        await context.bot.send_message(
+        await query.answer()
+        await send_message_with_retry(
+            context.bot,
             chat_id=client_telegram_id,
             text=message_text,
         )
-        await query.answer("✅ Сообщение отправлено клиенту.", show_alert=True)
         await query.edit_message_text(
             f"🚚 Заказ № {order['order_number']}\n\n"
             "✅ Сообщение отправлено клиенту."
         )
         return
 
-    await context.bot.send_message(
+    await query.answer()
+    await send_message_with_retry(
+        context.bot,
         chat_id=ADMIN_TELEGRAM_ID,
         text=(
             "📩 У курьера нет Telegram-канала для клиента\n\n"
@@ -298,10 +420,6 @@ async def handle_contact_client(
         ),
     )
 
-    await query.answer(
-        "ℹ️ Клиент не привязан к Telegram-чату, уведомление отправлено администратору.",
-        show_alert=True,
-    )
     await query.edit_message_text(
         f"🚚 Заказ № {order['order_number']}\n\n"
         "ℹ️ Для этого заказа нет Telegram-клиента, поэтому уведомление направлено администратору."
@@ -316,55 +434,67 @@ async def handle_deliver_order(
 
     telegram_id = query.from_user.id
     employee = get_employee_by_telegram_id(telegram_id)
+    language = employee["language"] if employee is not None else "ru"
 
     if employee is None:
-        await query.answer("Вы не зарегистрированы.", show_alert=True)
+        await query.answer(get_message(language, "not_registered"), show_alert=True)
         return
 
     if employee["application_status"] != "approved":
-        await query.answer("Ваша заявка не одобрена.", show_alert=True)
+        await query.answer(get_message(language, "not_approved"), show_alert=True)
         return
 
     if employee["is_active"] != 1:
-        await query.answer("Ваш рабочий доступ отключён.", show_alert=True)
+        await query.answer(get_message(language, "access_disabled"), show_alert=True)
         return
 
     if employee["is_on_shift"] != 1:
-        await query.answer("Сначала начните смену.", show_alert=True)
+        await query.answer(get_message(language, "start_shift"), show_alert=True)
         return
 
     if employee["role"] != "courier":
-        await query.answer("Эта кнопка доступна только курьеру.", show_alert=True)
+        await query.answer(get_message(language, "wrong_role"), show_alert=True)
         return
 
     try:
         order_id = int(query.data.split(":")[1])
     except (IndexError, ValueError):
-        await query.answer("Некорректный номер заказа.", show_alert=True)
+        await query.answer(get_message(language, "invalid_order"), show_alert=True)
         return
 
     result = deliver_order(order_id, employee["id"])
 
     if not result["success"]:
         if result["reason"] == "not_found":
-            message = "❌ Заказ не найден."
+            message = get_message(language, "order_not_found")
         elif result["reason"] == "wrong_status":
-            message = "⚠️ Заказ уже не находится в доставке."
+            message = get_message(language, "wrong_delivery_status")
         elif result["reason"] == "not_courier":
-            message = "⛔ Вы не являетесь курьером этого заказа."
+            message = get_message(language, "not_courier")
         else:
-            message = "❌ Не удалось завершить доставку."
+            message = get_message(language, "delivery_failed")
 
         await query.answer(message, show_alert=True)
         return
 
     order_number = result["order_number"]
-
-    await query.answer("✅ Заказ доставлен!", show_alert=True)
+    await query.answer(
+        get_message(employee["language"], "delivered_alert"),
+        show_alert=True,
+    )
+    await notify_customer_status(
+        context,
+        order_id,
+        employee["language"],
+        "client_delivered",
+    )
 
     await query.edit_message_text(
-        f"🚚 Заказ № {order_number}\n\n"
-        "✅ Заказ успешно доставлен клиенту."
+        get_message(
+            employee["language"],
+            "delivered_order",
+            order_number=order_number,
+        )
     )
 
 
@@ -378,45 +508,47 @@ async def handle_reject_order(
     employee = get_employee_by_telegram_id(telegram_id)
 
     if employee is None:
-        await query.answer("Вы не зарегистрированы.", show_alert=True)
+        language = "tg" if query.from_user.language_code == "tg" else "ru"
+        await query.answer(get_message(language, "not_registered"), show_alert=True)
         return
 
+    language = employee["language"]
     if employee["application_status"] != "approved":
-        await query.answer("Ваша заявка не одобрена.", show_alert=True)
+        await query.answer(get_message(language, "not_approved"), show_alert=True)
         return
 
     if employee["is_active"] != 1:
-        await query.answer("Ваш рабочий доступ отключён.", show_alert=True)
+        await query.answer(get_message(language, "access_disabled"), show_alert=True)
         return
 
     if employee["is_on_shift"] != 1:
-        await query.answer("Сначала начните смену.", show_alert=True)
+        await query.answer(get_message(language, "start_shift"), show_alert=True)
         return
 
     if employee["role"] != "courier":
-        await query.answer("Эта кнопка доступна только курьеру.", show_alert=True)
+        await query.answer(get_message(language, "wrong_role"), show_alert=True)
         return
 
     try:
         order_id = int(query.data.split(":")[1])
     except (IndexError, ValueError):
-        await query.answer("Некорректный номер заказа.", show_alert=True)
+        await query.answer(get_message(language, "invalid_order"), show_alert=True)
         return
 
     reason_keyboard = [
         [
-            InlineKeyboardButton("Клиент не вышел", callback_data=f"reject_reason:{order_id}:client_no_show"),
-            InlineKeyboardButton("Отказался", callback_data=f"reject_reason:{order_id}:refused"),
+            InlineKeyboardButton(get_message(employee["language"], "reason_no_show"), callback_data=f"reject_reason:{order_id}:client_no_show"),
+            InlineKeyboardButton(get_message(employee["language"], "reason_refused"), callback_data=f"reject_reason:{order_id}:refused"),
         ],
         [
-            InlineKeyboardButton("Неверный адрес", callback_data=f"reject_reason:{order_id}:wrong_address"),
-            InlineKeyboardButton("Другое", callback_data=f"reject_reason:{order_id}:other"),
+            InlineKeyboardButton(get_message(employee["language"], "reason_wrong_address"), callback_data=f"reject_reason:{order_id}:wrong_address"),
+            InlineKeyboardButton(get_message(employee["language"], "reason_other"), callback_data=f"reject_reason:{order_id}:other"),
         ],
     ]
 
     await query.answer("Выберите причину отклонения.", show_alert=True)
     await query.edit_message_text(
-        "⚠️ Выберите причину отклонения заказа:",
+        get_message(employee["language"], "reject_prompt"),
         reply_markup=InlineKeyboardMarkup(reason_keyboard),
     )
 
@@ -431,26 +563,28 @@ async def handle_reject_reason(
     employee = get_employee_by_telegram_id(telegram_id)
 
     if employee is None:
-        await query.answer("Вы не зарегистрированы.", show_alert=True)
+        language = "tg" if query.from_user.language_code == "tg" else "ru"
+        await query.answer(get_message(language, "not_registered"), show_alert=True)
         return
 
+    language = employee["language"]
     if employee["application_status"] != "approved":
-        await query.answer("Ваша заявка не одобрена.", show_alert=True)
+        await query.answer(get_message(language, "not_approved"), show_alert=True)
         return
 
     if employee["is_active"] != 1:
-        await query.answer("Ваш рабочий доступ отключён.", show_alert=True)
+        await query.answer(get_message(language, "access_disabled"), show_alert=True)
         return
 
     if employee["role"] != "courier":
-        await query.answer("Эта кнопка доступна только курьеру.", show_alert=True)
+        await query.answer(get_message(language, "wrong_role"), show_alert=True)
         return
 
     try:
         _, order_id_text, reason_code = query.data.split(":", 2)
         order_id = int(order_id_text)
     except (ValueError, TypeError, IndexError):
-        await query.answer("Некорректная причина отклонения.", show_alert=True)
+        await query.answer(get_message(language, "invalid_order"), show_alert=True)
         return
 
     reason_map = {
@@ -461,25 +595,100 @@ async def handle_reject_reason(
     }
 
     reason = reason_map.get(reason_code, "Причина не указана")
+    if reason_code == "other":
+        context.user_data["pending_rejection_order_id"] = order_id
+        await query.answer()
+        await query.edit_message_text(
+            get_message(employee["language"], "custom_rejection_prompt")
+        )
+        return REJECTION_REASON
+
     result = reject_order(order_id, employee["id"], reason)
 
     if not result["success"]:
         if result["reason"] == "not_found":
-            message = "❌ Заказ не найден."
+            message = get_message(employee["language"], "order_not_found")
         elif result["reason"] == "wrong_status":
-            message = "⚠️ Заказ уже не находится в доставке."
+            message = get_message(employee["language"], "wrong_delivery_status")
         elif result["reason"] == "not_courier":
-            message = "⛔ Вы не являетесь курьером этого заказа."
+            message = get_message(employee["language"], "not_courier")
         else:
-            message = "❌ Не удалось отклонить заказ."
+            message = get_message(employee["language"], "rejection_failed")
 
         await query.answer(message, show_alert=True)
         return
 
-    await query.answer("✅ Заказ отклонён.", show_alert=True)
+    await query.answer(
+        get_message(employee["language"], "rejected_alert"),
+        show_alert=True,
+    )
+    await notify_admin_about_rejection(
+        context,
+        order_id,
+        result["order_number"],
+        reason,
+    )
+    await notify_customer_status(
+        context,
+        order_id,
+        employee["language"],
+        "client_rejected",
+    )
+
     await query.edit_message_text(
         f"🚚 Заказ № {result['order_number']}\n\n"
         "❌ Заказ отклонён.\n\n"
         f"Причина: {reason}\n\n"
         "Администратор получил уведомление для решения по возврату товара."
     )
+
+
+async def save_custom_rejection_reason(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    employee = get_employee_by_telegram_id(update.effective_user.id)
+    order_id = context.user_data.pop("pending_rejection_order_id", None)
+    reason = update.message.text.strip()
+
+    if employee is None or not order_id:
+        await update.message.reply_text("⚠️ Не найдена активная заявка на отказ.")
+        return ConversationHandler.END
+
+    if not reason:
+        await update.message.reply_text("Напишите причину отказа текстом.")
+        context.user_data["pending_rejection_order_id"] = order_id
+        return REJECTION_REASON
+
+    result = reject_order(order_id, employee["id"], reason)
+    if not result["success"]:
+        await update.message.reply_text(
+            "⚠️ Заказ уже изменился либо ваша смена завершена."
+        )
+        return ConversationHandler.END
+
+    await notify_admin_about_rejection(
+        context,
+        order_id,
+        result["order_number"],
+        reason,
+    )
+    await notify_customer_status(
+        context,
+        order_id,
+        employee["language"],
+        "client_rejected",
+    )
+    await update.message.reply_text(
+        f"✅ Заказ № {result['order_number']} отклонён. Причина: {reason}"
+    )
+    return ConversationHandler.END
+
+
+async def cancel_custom_rejection_reason(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    context.user_data.pop("pending_rejection_order_id", None)
+    await update.message.reply_text("Отказ от заказа отменён; заказ остался у вас в работе.")
+    return ConversationHandler.END

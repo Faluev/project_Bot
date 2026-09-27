@@ -57,6 +57,8 @@ def init_database():
 
             is_on_shift INTEGER NOT NULL DEFAULT 0,
 
+            language TEXT NOT NULL DEFAULT 'ru',
+
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -78,6 +80,11 @@ def init_database():
             "ALTER TABLE employees ADD COLUMN is_on_shift INTEGER NOT NULL DEFAULT 0"
         )
 
+    if "language" not in columns:
+        cursor.execute(
+            "ALTER TABLE employees ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'"
+        )
+
     # ==========================================
     # 2. ЗАКАЗЫ
     # ==========================================
@@ -90,6 +97,8 @@ def init_database():
 
             client_name TEXT,
             client_phone TEXT,
+
+            client_telegram_id INTEGER,
 
             delivery_address TEXT,
 
@@ -113,6 +122,14 @@ def init_database():
                 REFERENCES employees(id)
         )
     """)
+
+    cursor.execute("PRAGMA table_info(orders)")
+    order_columns = [row["name"] for row in cursor.fetchall()]
+
+    if "client_telegram_id" not in order_columns:
+        cursor.execute(
+            "ALTER TABLE orders ADD COLUMN client_telegram_id INTEGER"
+        )
 
     # ==========================================
     # 3. ТОВАРЫ В ЗАКАЗАХ
@@ -189,6 +206,7 @@ def get_employee_by_telegram_id(telegram_id):
                 application_status,
                 is_active,
                 is_on_shift,
+                language,
                 created_at
             FROM employees
             WHERE telegram_id = ?
@@ -206,12 +224,15 @@ def create_employee_application(
     last_name,
     phone,
     role,
+    transport_type=None,
+    language="ru",
 ):
     """
     Создаёт или обновляет заявку сотрудника.
     """
 
     connection = get_connection()
+    language = language if language in ("ru", "tg") else "ru"
 
     try:
         cursor = connection.cursor()
@@ -252,6 +273,8 @@ def create_employee_application(
                     last_name = ?,
                     phone = ?,
                     role = ?,
+                    transport_type = ?,
+                    language = ?,
                     application_status = 'pending',
                     is_active = 1
                 WHERE telegram_id = ?
@@ -262,6 +285,8 @@ def create_employee_application(
                     last_name,
                     phone,
                     role,
+                    transport_type,
+                    language,
                     telegram_id,
                 ),
             )
@@ -280,10 +305,12 @@ def create_employee_application(
                 last_name,
                 phone,
                 role,
+                transport_type,
+                language,
                 application_status,
                 is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1)
             """,
             (
                 telegram_id,
@@ -292,6 +319,8 @@ def create_employee_application(
                 last_name,
                 phone,
                 role,
+                transport_type,
+                language,
             ),
         )
 
@@ -377,7 +406,8 @@ def update_application_status(employee_id, new_status):
                 phone,
                 role,
                 transport_type,
-                application_status
+                application_status,
+                language
             FROM employees
             WHERE id = ?
         """, (employee_id,))
@@ -449,6 +479,50 @@ def toggle_employee_access(employee_id):
         connection.close()
 
 
+def set_employee_access(employee_id, is_active):
+    """Sets employee access to the requested state without toggling it."""
+    if is_active not in (0, 1):
+        return None
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            UPDATE employees
+            SET
+                is_on_shift = CASE WHEN ? = 0 THEN 0 ELSE is_on_shift END,
+                is_active = ?
+            WHERE id = ?
+              AND application_status = 'approved'
+            """,
+            (is_active, is_active, employee_id),
+        )
+
+        if cursor.rowcount != 1:
+            connection.rollback()
+            return None
+
+        cursor.execute(
+            """
+            SELECT id, first_name, last_name, role, is_active, is_on_shift
+            FROM employees
+            WHERE id = ?
+            """,
+            (employee_id,),
+        )
+        employee = cursor.fetchone()
+        connection.commit()
+        return employee
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def get_new_orders():
     connection = get_connection()
     cursor = connection.cursor()
@@ -460,6 +534,7 @@ def get_new_orders():
             order_number,
             client_name,
             client_phone,
+            client_telegram_id,
             delivery_address,
             client_comment,
             payment_method,
@@ -478,6 +553,97 @@ def get_new_orders():
     return orders
 
 
+def get_on_shift_pickers():
+    """Возвращает Telegram ID сборщиков, которым можно слать заказы."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT id, telegram_id, language
+            FROM employees
+            WHERE role = 'picker'
+              AND application_status = 'approved'
+              AND is_active = 1
+              AND is_on_shift = 1
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def get_unnotified_new_orders(employee_id):
+    """Возвращает новые заказы, ещё не отправленные сборщику."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                o.id,
+                o.order_number,
+                o.client_name,
+                o.client_phone,
+                o.delivery_address,
+                o.client_comment,
+                o.payment_method,
+                o.payment_amount,
+                o.created_at
+            FROM orders o
+            WHERE o.status = 'new'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.employee_id = ?
+                    AND al.action = 'new_order_notification'
+              )
+            ORDER BY o.created_at ASC
+            """,
+            (employee_id,),
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def log_new_order_notification(order_id, employee_id):
+    """Фиксирует отправку нового заказа конкретному сборщику."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            SELECT ?, ?, 'new_order_notification', 'new', 'new',
+                   'Новый заказ отправлен сборщику'
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'new_order_notification'
+            )
+            """,
+            (order_id, employee_id, order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def get_order_by_id(order_id):
     connection = get_connection()
     cursor = connection.cursor()
@@ -489,6 +655,7 @@ def get_order_by_id(order_id):
             order_number,
             client_name,
             client_phone,
+            client_telegram_id,
             delivery_address,
             client_comment,
             payment_method,
@@ -531,6 +698,29 @@ def get_order_items(order_id):
 
     return items
 
+
+def _validate_employee_for_order_action(cursor, employee_id, required_role):
+    cursor.execute(
+        """
+        SELECT role, application_status, is_active, is_on_shift
+        FROM employees
+        WHERE id = ?
+        """,
+        (employee_id,),
+    )
+    employee = cursor.fetchone()
+
+    if employee is None or employee["application_status"] != "approved":
+        return "not_approved"
+    if employee["is_active"] != 1:
+        return "inactive"
+    if employee["is_on_shift"] != 1:
+        return "off_shift"
+    if employee["role"] != required_role:
+        return "wrong_role"
+    return None
+
+
 def start_order_assembly(order_id, employee_id):
     connection = get_connection()
 
@@ -541,6 +731,15 @@ def start_order_assembly(order_id, employee_id):
         # Транзакция — это группа операций,
         # которая выполняется как одно целое.
         connection.execute("BEGIN IMMEDIATE")
+
+        authorization_error = _validate_employee_for_order_action(
+            cursor,
+            employee_id,
+            "picker",
+        )
+        if authorization_error:
+            connection.rollback()
+            return {"success": False, "reason": authorization_error}
 
         # Проверяем, что заказ всё ещё новый
         cursor.execute(
@@ -639,6 +838,15 @@ def complete_order_assembly(order_id, employee_id):
         cursor = connection.cursor()
 
         connection.execute("BEGIN IMMEDIATE")
+
+        authorization_error = _validate_employee_for_order_action(
+            cursor,
+            employee_id,
+            "picker",
+        )
+        if authorization_error:
+            connection.rollback()
+            return {"success": False, "reason": authorization_error}
 
         # Получаем заказ
         cursor.execute(
@@ -747,7 +955,7 @@ def complete_order_assembly(order_id, employee_id):
         connection.close()
 
 
-def mark_order_missing_item(order_id, employee_id):
+def mark_order_missing_item(order_id, employee_id, item_name):
     """
     Сборщик отмечает, что товара нет в наличии.
     """
@@ -756,6 +964,15 @@ def mark_order_missing_item(order_id, employee_id):
     try:
         cursor = connection.cursor()
         connection.execute("BEGIN IMMEDIATE")
+
+        authorization_error = _validate_employee_for_order_action(
+            cursor,
+            employee_id,
+            "picker",
+        )
+        if authorization_error:
+            connection.rollback()
+            return {"success": False, "reason": authorization_error}
 
         cursor.execute(
             """
@@ -787,9 +1004,7 @@ def mark_order_missing_item(order_id, employee_id):
         cursor.execute(
             """
             UPDATE orders
-            SET
-                status = 'missing_item',
-                updated_at = CURRENT_TIMESTAMP
+            SET updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
               AND status = 'assembling'
               AND picker_id = ?
@@ -818,8 +1033,8 @@ def mark_order_missing_item(order_id, employee_id):
                 employee_id,
                 "missing_item",
                 "assembling",
-                "missing_item",
-                "Сборщик отметил отсутствие товара в заказе",
+                "assembling",
+                f"Сборщик отметил отсутствие позиции: {item_name}",
             ),
         )
 
@@ -956,11 +1171,20 @@ def get_employee_stats():
             avg_delivery_minutes = cursor.execute(
                 """
                 SELECT AVG(
-                    (strftime('%s', updated_at) - strftime('%s', created_at)) / 60.0
+                                        (julianday(delivered.created_at) - julianday(picked.created_at))
+                                        * 24 * 60
                 )
-                FROM orders
-                WHERE courier_id = ?
-                  AND status = 'delivered'
+                                FROM orders o
+                                JOIN action_log picked
+                                    ON picked.order_id = o.id
+                                 AND picked.employee_id = o.courier_id
+                                 AND picked.action = 'pickup_order'
+                                JOIN action_log delivered
+                                    ON delivered.order_id = o.id
+                                 AND delivered.employee_id = o.courier_id
+                                 AND delivered.action = 'deliver_order'
+                                WHERE o.courier_id = ?
+                                    AND o.status = 'delivered'
                 """,
                 (employee_id,),
             ).fetchone()[0]
@@ -1071,6 +1295,36 @@ def toggle_employee_shift(employee_id):
         connection.close()
 
 
+def toggle_employee_language(employee_id):
+    """Переключает язык интерфейса сотрудника между русским и таджикским."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE employees
+            SET language = CASE language WHEN 'ru' THEN 'tg' ELSE 'ru' END
+            WHERE id = ?
+              AND application_status = 'approved'
+              AND is_active = 1
+            """,
+            (employee_id,),
+        )
+        if cursor.rowcount != 1:
+            return None
+
+        cursor.execute(
+            "SELECT language FROM employees WHERE id = ?",
+            (employee_id,),
+        )
+        language = cursor.fetchone()["language"]
+        connection.commit()
+        return language
+    finally:
+        connection.close()
+
+
 def log_order_timeout_alert(order_id, status, timeout_minutes):
     """
     Записывает уведомление администратору о том,
@@ -1148,6 +1402,164 @@ def get_orders_waiting_for_courier():
     return orders
 
 
+def get_on_shift_couriers():
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT id, telegram_id, language
+            FROM employees
+            WHERE role = 'courier'
+              AND application_status = 'approved'
+              AND is_active = 1
+              AND is_on_shift = 1
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def get_unnotified_courier_orders(employee_id):
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                o.id,
+                o.order_number,
+                o.client_name,
+                o.client_phone,
+                o.delivery_address,
+                o.client_comment,
+                o.payment_method,
+                o.payment_amount
+            FROM orders o
+            WHERE o.status = 'awaiting_courier'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.employee_id = ?
+                    AND al.action = 'courier_order_notification'
+              )
+            ORDER BY o.updated_at ASC
+            """,
+            (employee_id,),
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def log_courier_order_notification(order_id, employee_id):
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            SELECT ?, ?, 'courier_order_notification',
+                   'awaiting_courier', 'awaiting_courier',
+                   'Заказ отправлен курьеру'
+            WHERE EXISTS (
+                SELECT 1 FROM orders
+                WHERE id = ? AND status = 'awaiting_courier'
+            )
+              AND NOT EXISTS (
+                  SELECT 1 FROM action_log
+                  WHERE order_id = ?
+                    AND employee_id = ?
+                    AND action = 'courier_order_notification'
+              )
+            """,
+            (order_id, employee_id, order_id, order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_pending_missing_item_alerts():
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                source.id AS event_id,
+                source.order_id,
+                source.details,
+                source.created_at,
+                o.order_number,
+                employee.first_name || ' ' || employee.last_name AS picker_name
+            FROM action_log source
+            JOIN orders o ON o.id = source.order_id
+            LEFT JOIN employees employee ON employee.id = source.employee_id
+            WHERE source.action = 'missing_item'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log sent
+                  WHERE sent.action = 'missing_item_admin_notification'
+                    AND sent.details = 'source_action_id:' || source.id
+              )
+            ORDER BY source.created_at ASC
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def log_missing_item_alert_sent(event_id, order_id):
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            SELECT ?, NULL, 'missing_item_admin_notification',
+                   'assembling', 'assembling', ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM action_log
+                WHERE action = 'missing_item_admin_notification'
+                  AND details = ?
+            )
+            """,
+            (
+                order_id,
+                f"source_action_id:{event_id}",
+                f"source_action_id:{event_id}",
+            ),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def get_admin_orders_feed():
     """
     Возвращает ленту заказов для админки: статус, клиент, адрес, ответственные.
@@ -1169,6 +1581,13 @@ def get_admin_orders_feed():
                 o.status,
                 o.created_at,
                 o.updated_at,
+                CASE
+                    WHEN o.status = 'delivered' THEN ROUND(
+                        (julianday(o.updated_at) - julianday(o.created_at)) * 24 * 60,
+                        1
+                    )
+                    ELSE NULL
+                END AS total_delivery_minutes,
                 picker.first_name || ' ' || picker.last_name AS picker_name,
                 courier.first_name || ' ' || courier.last_name AS courier_name
             FROM orders o
@@ -1226,6 +1645,15 @@ def pickup_order(order_id, employee_id):
         cursor = connection.cursor()
 
         connection.execute("BEGIN IMMEDIATE")
+
+        authorization_error = _validate_employee_for_order_action(
+            cursor,
+            employee_id,
+            "courier",
+        )
+        if authorization_error:
+            connection.rollback()
+            return {"success": False, "reason": authorization_error}
 
         # Получаем заказ
         cursor.execute(
@@ -1328,6 +1756,15 @@ def deliver_order(order_id, employee_id):
 
         connection.execute("BEGIN IMMEDIATE")
 
+        authorization_error = _validate_employee_for_order_action(
+            cursor,
+            employee_id,
+            "courier",
+        )
+        if authorization_error:
+            connection.rollback()
+            return {"success": False, "reason": authorization_error}
+
         cursor.execute(
             """
             SELECT id, order_number, status, courier_id
@@ -1415,6 +1852,15 @@ def reject_order(order_id, employee_id, reason):
         cursor = connection.cursor()
         connection.execute("BEGIN IMMEDIATE")
 
+        authorization_error = _validate_employee_for_order_action(
+            cursor,
+            employee_id,
+            "courier",
+        )
+        if authorization_error:
+            connection.rollback()
+            return {"success": False, "reason": authorization_error}
+
         cursor.execute(
             """
             SELECT id, order_number, status, courier_id
@@ -1492,6 +1938,110 @@ def reject_order(order_id, employee_id, reason):
         connection.rollback()
         raise
 
+    finally:
+        connection.close()
+
+
+def get_rejected_orders():
+    """Возвращает отклонённые заказы без решения по товару."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                o.id,
+                o.order_number,
+                o.client_name,
+                o.updated_at,
+                (
+                    SELECT al.details
+                    FROM action_log al
+                    WHERE al.order_id = o.id
+                      AND al.action = 'reject_order'
+                    ORDER BY al.created_at DESC
+                    LIMIT 1
+                ) AS rejection_details
+            FROM orders o
+            WHERE o.status = 'rejected'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.action IN ('return_to_stock', 'write_off')
+              )
+            ORDER BY o.updated_at ASC
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def resolve_rejected_order(order_id, resolution, admin_telegram_id=None):
+    """Фиксирует решение админа по товарам отклонённого заказа."""
+    if resolution not in ("return_to_stock", "write_off"):
+        return {"success": False, "reason": "invalid_resolution"}
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            "SELECT id, order_number, status FROM orders WHERE id = ?",
+            (order_id,),
+        )
+        order = cursor.fetchone()
+
+        if order is None:
+            connection.rollback()
+            return {"success": False, "reason": "not_found"}
+
+        if order["status"] != "rejected":
+            connection.rollback()
+            return {"success": False, "reason": "wrong_status"}
+
+        already_resolved = cursor.execute(
+            """
+            SELECT 1
+            FROM action_log
+            WHERE order_id = ?
+              AND action IN ('return_to_stock', 'write_off')
+            """,
+            (order_id,),
+        ).fetchone()
+        if already_resolved:
+            connection.rollback()
+            return {"success": False, "reason": "already_resolved"}
+
+        details = (
+            "Администратор решил вернуть товар на склад"
+            if resolution == "return_to_stock"
+            else "Администратор решил списать товар"
+        )
+        if admin_telegram_id is not None:
+            details += f" (Telegram ID администратора: {admin_telegram_id})"
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            VALUES (?, NULL, ?, 'rejected', 'rejected', ?)
+            """,
+            (order_id, resolution, details),
+        )
+        connection.commit()
+        return {
+            "success": True,
+            "order_number": order["order_number"],
+            "resolution": resolution,
+        }
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
