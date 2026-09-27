@@ -279,12 +279,10 @@ application.job_queue.run_repeating(
 # ЗАПУСКАЕМ БОТА
 # ==========================================
 
-print(
-    "Бот сборщика запущен. "
-    "Ожидаю сообщения..."
-)
-
 if __name__ == "__main__":
     asyncio.set_event_loop(asyncio.new_event_loop())
-    print("Бот курьера запущен. Ожидаю сообщения...")
+    print(
+        "Бот сборщика запущен. "
+        "Ожидаю сообщения..."
+    )
     application.run_polling()

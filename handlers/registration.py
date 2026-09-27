@@ -1,4 +1,4 @@
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 from telegram.ext import (
     ContextTypes,
@@ -303,7 +303,7 @@ async def get_phone(
                 get_preferred_language(update, context),
                 "registration_transport_prompt",
             ),
-            reply_markup=None,
+            reply_markup=ReplyKeyboardRemove(),
         )
         return COURIER_TRANSPORT
 
