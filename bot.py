@@ -2,6 +2,7 @@ import logging
 
 import asyncio
 
+from telegram import BotCommand, BotCommandScopeChat
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -11,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, ADMIN_TELEGRAM_ID
 from database import init_database
 
 logger = logging.getLogger(__name__)
@@ -60,17 +61,6 @@ from handlers.language import toggle_language
 # СОЗДАЁМ TELEGRAM-БОТА
 # ==========================================
 
-application = (
-    ApplicationBuilder()
-    .token(BOT_TOKEN)
-    .post_init(setup_bot_commands)
-    .build()
-)
-application.add_error_handler(handle_application_error)
-application.bot_data["role"] = "picker"
-
-
-
 async def setup_bot_commands(application):
     """Настраивает команды Telegram для сотрудников и администратора."""
     employee_commands = [
@@ -95,6 +85,17 @@ async def setup_bot_commands(application):
         scope=BotCommandScopeChat(ADMIN_TELEGRAM_ID),
     )
 
+
+
+
+application = (
+    ApplicationBuilder()
+    .token(BOT_TOKEN)
+    .post_init(setup_bot_commands)
+    .build()
+)
+application.add_error_handler(handle_application_error)
+application.bot_data["role"] = "picker"
 
 
 
