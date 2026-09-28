@@ -110,7 +110,7 @@ async def start_registration(
 
     telegram_id = update.effective_user.id
 
-    if telegram_id == ADMIN_TELEGRAM_ID:
+    if telegram_id == ADMIN_TELEGRAM_ID and update.message.text != "👷 Регистрация сборщика":
         await update.message.reply_text(
             "👨‍💼 Панель администратора готова.",
             reply_markup=get_admin_menu(),
@@ -180,7 +180,7 @@ async def start_registration(
     # НОВАЯ РЕГИСТРАЦИЯ
     # ==========================================
 
-    if update.message.text != "🚀 Начать":
+    if update.message.text not in ("🚀 Начать", "👷 Регистрация сборщика"):
         await update.message.reply_text(
             "👋 Добро пожаловать!\n\nНажмите «🚀 Начать», чтобы подать заявку.",
             reply_markup=get_registration_menu(),
