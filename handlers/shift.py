@@ -1,7 +1,8 @@
 from telegram import Update
+from handlers.employee import get_current_employee
 from telegram.ext import ContextTypes
 
-from database import get_employee_by_telegram_id, toggle_employee_shift
+from database import toggle_employee_shift
 from handlers.menu import get_work_menu
 from handlers.i18n import get_message
 
@@ -10,10 +11,7 @@ async def toggle_shift(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    employee = get_employee_by_telegram_id(
-        update.effective_user.id,
-        context.bot_data.get("role"),
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None or employee["application_status"] != "approved":
         await update.message.reply_text(
