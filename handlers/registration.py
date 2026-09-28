@@ -2,7 +2,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram.ext import (
     ContextTypes,
@@ -36,6 +36,45 @@ def get_preferred_language(update, context):
     language = "tg" if telegram_language == "tg" else "ru"
     context.user_data["registration_language"] = language
     return language
+
+
+async def notify_admin_about_application(context, employee_data):
+    """Сразу уведомляет администратора о новой заявке с кнопками решения."""
+    role_label = "👷 Сборщик" if employee_data["role"] == "picker" else "🚚 Курьер"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Одобрить",
+                callback_data=f"approve:{employee_data['id']}",
+            ),
+            InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=f"reject:{employee_data['id']}",
+            ),
+        ]
+    ])
+    text = (
+        "🔔 Новая заявка сотрудника\n\n"
+        f"👤 {employee_data['first_name']} {employee_data['last_name']}\n"
+        f"🎯 Роль: {role_label}\n"
+        f"📱 Телефон: {employee_data['phone']}\n"
+        f"💬 Telegram: @{employee_data['telegram_username']}"
+        if employee_data["telegram_username"]
+        else
+        (
+            "🔔 Новая заявка сотрудника\n\n"
+            f"👤 {employee_data['first_name']} {employee_data['last_name']}\n"
+            f"🎯 Роль: {role_label}\n"
+            f"📱 Телефон: {employee_data['phone']}\n"
+            "💬 Telegram: не указан"
+        )
+    )
+    await send_message_with_retry(
+        context.bot,
+        chat_id=ADMIN_TELEGRAM_ID,
+        text=text,
+        reply_markup=keyboard,
+    )
 
 
 def build_admin_contact_message(employee, text):
@@ -238,6 +277,14 @@ async def get_courier_transport(
     await update.message.reply_text(
         get_message(get_preferred_language(update, context), message_key)
     )
+
+    if result in ("created", "recreated"):
+        employee = get_employee_by_telegram_id(
+            update.effective_user.id,
+            "courier",
+        )
+        if employee is not None:
+            await notify_admin_about_application(context, employee)
     context.user_data.pop("registration_role", None)
     context.user_data.pop("registration_language", None)
     return ConversationHandler.END
