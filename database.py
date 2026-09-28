@@ -1445,34 +1445,71 @@ def log_order_timeout_alert(order_id, status, timeout_minutes):
         connection.close()
 
 
-def get_orders_waiting_for_courier():
+def get_orders_for_courier(employee_id):
+    """
+    Возвращает заказы, которые курьер может видеть:
+    - awaiting_courier — доступны для получения;
+    - in_delivery — только если уже закреплены за этим курьером.
+    """
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute(
-        """
-        SELECT
-            id,
-            order_number,
-            client_name,
-            client_phone,
-            delivery_address,
-            client_comment,
-            payment_method,
-            payment_amount,
-            status,
-            created_at
-        FROM orders
-        WHERE status = 'awaiting_courier'
-        ORDER BY created_at ASC
-        """
-    )
+    try:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                order_number,
+                client_name,
+                client_phone,
+                delivery_address,
+                client_comment,
+                payment_method,
+                payment_amount,
+                status,
+                courier_id,
+                created_at
+            FROM orders
+            WHERE status = 'awaiting_courier'
+               OR (status = 'in_delivery' AND courier_id = ?)
+            ORDER BY
+                CASE WHEN status = 'in_delivery' THEN 0 ELSE 1 END,
+                created_at ASC
+            """,
+            (employee_id,),
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
 
-    orders = cursor.fetchall()
 
-    connection.close()
+def get_orders_waiting_for_courier():
+    """Совместимость со старым кодом: только заказы, ожидающие курьера."""
+    connection = get_connection()
+    cursor = connection.cursor()
 
-    return orders
+    try:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                order_number,
+                client_name,
+                client_phone,
+                delivery_address,
+                client_comment,
+                payment_method,
+                payment_amount,
+                status,
+                created_at
+            FROM orders
+            WHERE status = 'awaiting_courier'
+            ORDER BY created_at ASC
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
 
 
 def get_on_shift_couriers():
