@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from telegram import ReplyKeyboardRemove
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import ConversationHandler
 
@@ -17,7 +17,8 @@ from handlers.courier_orders import build_client_contact_message
 from handlers.registration import build_admin_contact_message
 from handlers.retry import send_message_with_retry
 from handlers.i18n import MESSAGES
-from handlers.employee import get_current_employee
+from handlers.employee import get_current_employee, show_work_menu
+from handlers.menu import get_admin_menu, get_work_menu, get_work_menu_expanded
 
 
 class OrderTimeoutTests(unittest.TestCase):
@@ -1095,6 +1096,207 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertFalse(
             database.is_valid_order_transition("unknown", "delivered")
         )
+
+
+    def test_admin_picker_registration_button_starts_picker_flow(self):
+        update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="👷 Регистрация сборщика")
+        context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
+
+        result = asyncio.run(registration.start_registration(update, context))
+
+        self.assertEqual(result, registration.FIRST_LAST_NAME)
+        self.assertEqual(context.user_data["registration_role"], "picker")
+        self.assertTrue(update.message.reply_text.await_count)
+        self.assertIn("Имя", update.message.reply_text.await_args.args[0])
+
+    def test_admin_start_opens_admin_menu(self):
+        update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="/start")
+        context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
+
+        result = asyncio.run(registration.start_registration(update, context))
+
+        self.assertEqual(result, ConversationHandler.END)
+        markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+        self.assertIsInstance(markup, ReplyKeyboardMarkup)
+        labels = [button.text for row in markup.keyboard for button in row]
+        self.assertIn("📋 Заявки", labels)
+        self.assertIn("👷 Регистрация сборщика", labels)
+
+    def test_admin_menu_contains_all_core_actions(self):
+        markup = get_admin_menu()
+        labels = [button.text for row in markup.keyboard for button in row]
+        expected = {
+            "📋 Заявки",
+            "👥 Сотрудники",
+            "📦 Заказы",
+            "📊 Статистика",
+            "⏰ Таймауты",
+            "📜 Аудит",
+            "⚠️ Отклонённые",
+            "🆔 Мой ID",
+            "👷 Регистрация сборщика",
+        }
+        self.assertTrue(expected.issubset(set(labels)))
+        self.assertEqual(len(labels), len(expected))
+
+    def test_picker_work_menu_is_collapsed(self):
+        markup = get_work_menu("picker", is_on_shift=True)
+        self.assertEqual(
+            [[button.text for button in row] for row in markup.keyboard],
+            [["☰ Меню"]],
+        )
+
+    def test_courier_work_menu_is_collapsed(self):
+        markup = get_work_menu("courier", is_on_shift=False)
+        self.assertEqual(
+            [[button.text for button in row] for row in markup.keyboard],
+            [["☰ Меню"]],
+        )
+
+    def test_show_work_menu_expands_picker_actions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/expand_picker.db"
+            database.init_database()
+            database.create_employee_application(
+                910, "picker_user", "Ivan", "Ivanov", "+992910", "picker"
+            )
+            database.set_employee_application_status(1, "approved")
+
+            update = self._registration_update(910)
+            context = SimpleNamespace(bot_data={"role": "picker"}, user_data={})
+
+            asyncio.run(show_work_menu(update, context))
+
+            markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+            labels = [button.text for row in markup.keyboard for button in row]
+            self.assertIn("📦 Текущие заказы", labels)
+            self.assertIn("🔴 Начать смену", labels)
+
+    def test_show_work_menu_expands_courier_actions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/expand_courier.db"
+            database.init_database()
+            database.create_employee_application(
+                911, "courier_user", "Ivan", "Ivanov", "+992911", "courier", "car"
+            )
+            database.set_employee_application_status(1, "approved")
+
+            update = self._registration_update(911)
+            context = SimpleNamespace(bot_data={"role": "courier"}, user_data={})
+
+            asyncio.run(show_work_menu(update, context))
+
+            markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+            labels = [button.text for row in markup.keyboard for button in row]
+            self.assertIn("🚚 Текущий заказ", labels)
+            self.assertIn("🔴 Начать смену", labels)
+
+    def test_picker_application_notification_contains_approval_actions(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        employee = {
+            "id": 42,
+            "first_name": "Ivan",
+            "last_name": "Ivanov",
+            "phone": "+992",
+            "telegram_username": "ivan",
+            "role": "picker",
+        }
+
+        asyncio.run(
+            registration.notify_admin_about_application(
+                SimpleNamespace(bot=bot),
+                employee,
+            )
+        )
+
+        bot.send_message.assert_awaited_once()
+        call = bot.send_message.await_args
+        self.assertEqual(call.kwargs["chat_id"], registration.ADMIN_TELEGRAM_ID)
+        self.assertIn("Сборщик", call.kwargs["text"])
+        buttons = call.kwargs["reply_markup"].inline_keyboard[0]
+        self.assertEqual(buttons[0].text, "✅ Одобрить")
+        self.assertEqual(buttons[0].callback_data, "approve:42")
+        self.assertEqual(buttons[1].text, "❌ Отклонить")
+        self.assertEqual(buttons[1].callback_data, "reject:42")
+
+    def test_courier_application_notification_contains_transport_role(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        employee = {
+            "id": 43,
+            "first_name": "Ivan",
+            "last_name": "Ivanov",
+            "phone": "+992",
+            "telegram_username": None,
+            "role": "courier",
+            "transport_type": "car",
+        }
+
+        asyncio.run(
+            registration.notify_admin_about_application(
+                SimpleNamespace(bot=bot),
+                employee,
+            )
+        )
+
+        text = bot.send_message.await_args.kwargs["text"]
+        self.assertIn("Курьер", text)
+        self.assertIn("Telegram: не указан", text)
+
+    def test_pending_picker_application_does_not_send_duplicate_admin_notification(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/pending_notification.db"
+            database.init_database()
+            database.create_employee_application(
+                912, "picker_user", "Ivan", "Ivanov", "+992912", "picker"
+            )
+
+            bot = SimpleNamespace(send_message=AsyncMock())
+            update = self._registration_update(912, contact_phone="+992912")
+            context = SimpleNamespace(
+                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
+                bot_data={"role": "picker"},
+                bot=bot,
+            )
+
+            result = asyncio.run(registration.save_picker_application(update, context))
+
+            self.assertEqual(result, ConversationHandler.END)
+            bot.send_message.assert_not_awaited()
+
+    def test_recreated_picker_application_sends_new_admin_notification(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/recreated_notification.db"
+            database.init_database()
+            database.create_employee_application(
+                913, "picker_user", "Ivan", "Ivanov", "+992913", "picker"
+            )
+            database.set_employee_application_status(1, "rejected")
+
+            bot = SimpleNamespace(send_message=AsyncMock())
+            update = self._registration_update(913, contact_phone="+992913")
+            context = SimpleNamespace(
+                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
+                bot_data={"role": "picker"},
+                bot=bot,
+            )
+
+            result = asyncio.run(registration.save_picker_application(update, context))
+
+            self.assertEqual(result, ConversationHandler.END)
+            bot.send_message.assert_awaited_once()
+            self.assertIn("Новая заявка сотрудника", bot.send_message.await_args.kwargs["text"])
+
+    def test_expanded_picker_menu_changes_shift_action(self):
+        off_shift = get_work_menu_expanded("picker", False, "ru")
+        on_shift = get_work_menu_expanded("picker", True, "ru")
+
+        off_labels = [button.text for row in off_shift.keyboard for button in row]
+        on_labels = [button.text for row in on_shift.keyboard for button in row]
+
+        self.assertIn("🔴 Начать смену", off_labels)
+        self.assertIn("🟢 Завершить смену", on_labels)
+        self.assertNotIn("🟢 Завершить смену", off_labels)
+        self.assertNotIn("🔴 Начать смену", on_labels)
 
 
 if __name__ == "__main__":
