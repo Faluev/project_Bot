@@ -1320,6 +1320,69 @@ def get_employee_stats(employee_id=None):
         connection.close()
 
 
+def get_admin_stats_summary():
+    """Возвращает общую статистику для административной панели."""
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        total_orders = cursor.execute(
+            "SELECT COUNT(*) FROM orders"
+        ).fetchone()[0] or 0
+        delivered_orders = cursor.execute(
+            "SELECT COUNT(*) FROM orders WHERE status = 'delivered'"
+        ).fetchone()[0] or 0
+        rejected_orders = cursor.execute(
+            "SELECT COUNT(*) FROM orders WHERE status = 'rejected'"
+        ).fetchone()[0] or 0
+        active_employees = cursor.execute(
+            """
+            SELECT COUNT(*) FROM employees
+            WHERE application_status = 'approved' AND is_active = 1
+            """
+        ).fetchone()[0] or 0
+        on_shift_employees = cursor.execute(
+            """
+            SELECT COUNT(*) FROM employees
+            WHERE application_status = 'approved'
+              AND is_active = 1
+              AND is_on_shift = 1
+            """
+        ).fetchone()[0] or 0
+        avg_delivery_minutes = cursor.execute(
+            """
+            SELECT AVG(
+                (julianday(delivered.created_at) - julianday(picked.created_at)) * 24 * 60
+            )
+            FROM orders o
+            JOIN action_log picked
+                ON picked.order_id = o.id
+               AND picked.employee_id = o.courier_id
+               AND picked.action = 'pickup_order'
+            JOIN action_log delivered
+                ON delivered.order_id = o.id
+               AND delivered.employee_id = o.courier_id
+               AND delivered.action = 'deliver_order'
+            WHERE o.status = 'delivered'
+            """
+        ).fetchone()[0]
+
+        return {
+            "total_orders": total_orders,
+            "delivered_orders": delivered_orders,
+            "rejected_orders": rejected_orders,
+            "active_employees": active_employees,
+            "on_shift_employees": on_shift_employees,
+            "avg_delivery_minutes": (
+                round(float(avg_delivery_minutes), 1)
+                if avg_delivery_minutes is not None
+                else None
+            ),
+        }
+    finally:
+        connection.close()
+
+
 def get_employee_shift_report(employee_id, report_date=None):
     """
     Возвращает сводку действий сотрудника за одну смену.
