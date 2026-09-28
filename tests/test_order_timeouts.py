@@ -830,5 +830,40 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
 
 
+    def test_order_status_transition_matrix(self):
+        valid = [
+            ("new", "assembling"),
+            ("assembling", "awaiting_courier"),
+            ("awaiting_courier", "in_delivery"),
+            ("in_delivery", "delivered"),
+            ("in_delivery", "rejected"),
+        ]
+        invalid = [
+            ("new", "delivered"),
+            ("new", "in_delivery"),
+            ("assembling", "delivered"),
+            ("awaiting_courier", "delivered"),
+            ("delivered", "in_delivery"),
+            ("rejected", "delivered"),
+        ]
+
+        for old_status, new_status in valid:
+            with self.subTest(old_status=old_status, new_status=new_status):
+                self.assertTrue(
+                    database.is_valid_order_transition(old_status, new_status)
+                )
+
+        for old_status, new_status in invalid:
+            with self.subTest(old_status=old_status, new_status=new_status):
+                self.assertFalse(
+                    database.is_valid_order_transition(old_status, new_status)
+                )
+
+    def test_unknown_order_status_cannot_transition(self):
+        self.assertFalse(
+            database.is_valid_order_transition("unknown", "delivered")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
