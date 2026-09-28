@@ -16,9 +16,42 @@ from handlers.courier_orders import build_client_contact_message
 from handlers.registration import build_admin_contact_message
 from handlers.retry import send_message_with_retry
 from handlers.i18n import MESSAGES
+from handlers.employee import get_current_employee
 
 
 class OrderTimeoutTests(unittest.TestCase):
+    def test_current_employee_lookup_is_role_aware(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/employee_role.db"
+            database.init_database()
+
+            database.create_employee_application(
+                900, "worker", "Ali", "Aliev", "+992900000009", "picker"
+            )
+            database.create_employee_application(
+                900, "worker", "Ali", "Aliev", "+992900000009", "courier", "bike"
+            )
+
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(id=900)
+            )
+
+            picker_context = SimpleNamespace(bot_data={"role": "picker"})
+            courier_context = SimpleNamespace(bot_data={"role": "courier"})
+
+            picker = get_current_employee(update, picker_context)
+            courier = get_current_employee(update, courier_context)
+
+            self.assertEqual(picker["role"], "picker")
+            self.assertEqual(courier["role"], "courier")
+            self.assertNotEqual(picker["id"], courier["id"])
+
+    def test_current_employee_lookup_rejects_unknown_role(self):
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=900))
+        context = SimpleNamespace(bot_data={"role": "admin"})
+
+        self.assertIsNone(get_current_employee(update, context))
+
     def test_translation_catalogs_have_matching_keys(self):
         self.assertEqual(set(MESSAGES["ru"]), set(MESSAGES["tg"]))
 
