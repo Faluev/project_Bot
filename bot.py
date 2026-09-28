@@ -67,6 +67,7 @@ from handlers.orders import (
 from handlers.shift import toggle_shift
 from handlers.language import toggle_language
 from handlers.menu import get_admin_menu, get_registration_menu
+from handlers.employee import show_work_menu
 
 
 # ==========================================
@@ -183,6 +184,15 @@ application.add_handler(
 application.add_handler(
     contact_admin_handler
 )
+
+
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^☰ Меню$"),
+        show_work_menu,
+    )
+)
+
 
 
 # ==========================================
