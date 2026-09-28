@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from telegram import ReplyKeyboardRemove
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import ConversationHandler
 
 import database
@@ -20,6 +21,44 @@ from handlers.employee import get_current_employee
 
 
 class OrderTimeoutTests(unittest.TestCase):
+
+    def test_retry_retries_transient_network_error(self):
+        bot = SimpleNamespace(
+            send_message=AsyncMock(
+                side_effect=[NetworkError("temporary"), "sent"]
+            )
+        )
+
+        result = asyncio.run(
+            send_message_with_retry(
+                bot,
+                chat_id=1,
+                text="test",
+            )
+        )
+
+        self.assertEqual(result, "sent")
+        self.assertEqual(bot.send_message.await_count, 2)
+
+    def test_retry_does_not_retry_permanent_telegram_error(self):
+        bot = SimpleNamespace(
+            send_message=AsyncMock(
+                side_effect=BadRequest("invalid request")
+            )
+        )
+
+        with self.assertRaises(BadRequest):
+            asyncio.run(
+                send_message_with_retry(
+                    bot,
+                    chat_id=1,
+                    text="test",
+                )
+            )
+
+        self.assertEqual(bot.send_message.await_count, 1)
+
+
     def test_current_employee_lookup_is_role_aware(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/employee_role.db"
