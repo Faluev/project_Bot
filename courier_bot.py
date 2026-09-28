@@ -28,7 +28,7 @@ async def handle_application_error(update, context):
     logger.error("Unhandled exception while processing update", exc_info=context.error)
 
 from handlers.menu import get_courier_menu
-from handlers.employee import get_current_employee
+from handlers.employee import get_current_employee, show_work_menu
 from handlers.registration import (
     ADMIN_CONTACT,
     FIRST_LAST_NAME,
@@ -149,6 +149,14 @@ courier_registration_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", cancel_registration)],
 )
+
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^☰ Меню$"),
+        show_work_menu,
+    )
+)
+
 
 application.add_handler(courier_registration_handler)
 
