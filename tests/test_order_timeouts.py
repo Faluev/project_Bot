@@ -1588,5 +1588,34 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(actors, [2, 2])
 
 
+
+    def test_invalid_employee_role_cannot_create_application(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/invalid_role.db"
+            database.init_database()
+
+            result = database.create_employee_application(
+                930, "invalid", "Ivan", "Ivanov", "+992930", "admin"
+            )
+
+            self.assertEqual(result, "invalid_role")
+            self.assertIsNone(database.get_employee_by_id(1))
+
+    def test_invalid_application_status_cannot_change_pending_application(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/invalid_application_status.db"
+            database.init_database()
+
+            database.create_employee_application(
+                931, "worker", "Ivan", "Ivanov", "+992931", "picker"
+            )
+
+            result = database.update_application_status(1, "banana")
+
+            self.assertIsNone(result)
+            employee = database.get_employee_by_id(1)
+            self.assertEqual(employee["application_status"], "pending")
+            self.assertEqual(employee["is_active"], 1)
+
 if __name__ == "__main__":
     unittest.main()
