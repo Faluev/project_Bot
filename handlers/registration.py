@@ -21,6 +21,7 @@ from database import (
 from handlers.menu import get_work_menu
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
+from handlers.employee import get_current_employee
 
 # Состояния регистрации
 FIRST_LAST_NAME, PHONE, ADMIN_CONTACT, COURIER_TRANSPORT = range(4)
@@ -381,10 +382,7 @@ async def start_contact_admin(
     Начинает чат с администратором через пересылку текста.
     """
     telegram_id = update.effective_user.id
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        context.bot_data.get("role"),
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         await update.message.reply_text(
@@ -422,10 +420,7 @@ async def handle_contact_admin_message(
     Пересылает текст сотрудника администратору.
     """
     telegram_id = update.effective_user.id
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        context.bot_data.get("role"),
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         await update.message.reply_text("⛔ Сотрудник не найден.")
@@ -471,10 +466,7 @@ async def cancel_contact_admin(
     """
     context.user_data.pop("admin_contact_active", None)
 
-    employee = get_employee_by_telegram_id(
-        update.effective_user.id,
-        context.bot_data.get("role"),
-    )
+    employee = get_current_employee(update, context)
 
     if employee is not None:
         await update.message.reply_text(
