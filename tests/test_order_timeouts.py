@@ -212,6 +212,51 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(employee["is_on_shift"], 0)
             self.assertEqual(employee["is_active"], 1)
 
+    def test_employee_access_isolated_between_roles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/two_role_access.db"
+            database.init_database()
+
+            database.create_employee_application(
+                3100, "dual", "Али", "Алиев", "+992", "picker"
+            )
+            database.create_employee_application(
+                3100, "dual", "Али", "Алиев", "+992", "courier", "bike"
+            )
+            picker = database.get_employee_by_telegram_id(3100, "picker")
+            courier = database.get_employee_by_telegram_id(3100, "courier")
+            database.update_application_status(picker["id"], "approved")
+            database.update_application_status(courier["id"], "approved")
+
+            database.set_employee_access(picker["id"], 0)
+
+            picker = database.get_employee_by_telegram_id(3100, "picker")
+            courier = database.get_employee_by_telegram_id(3100, "courier")
+            self.assertEqual(picker["is_active"], 0)
+            self.assertEqual(picker["is_on_shift"], 0)
+            self.assertEqual(courier["is_active"], 1)
+
+    def test_employee_stats_can_be_filtered_to_one_role_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/employee_stats_filter.db"
+            database.init_database()
+
+            database.create_employee_application(
+                3200, "dual", "Мирзо", "Каримов", "+992", "picker"
+            )
+            database.create_employee_application(
+                3200, "dual", "Мирзо", "Каримов", "+992", "courier", "car"
+            )
+            picker = database.get_employee_by_telegram_id(3200, "picker")
+            courier = database.get_employee_by_telegram_id(3200, "courier")
+            database.update_application_status(picker["id"], "approved")
+            database.update_application_status(courier["id"], "approved")
+
+            stats = database.get_employee_stats(courier["id"])
+            self.assertEqual(len(stats), 1)
+            self.assertEqual(stats[0]["id"], courier["id"])
+            self.assertEqual(stats[0]["role"], "courier")
+
     def test_toggle_employee_access_disables_shift_and_restores_access(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/test_delivery.db"
