@@ -18,7 +18,7 @@ from database import (
     get_employee_by_telegram_id,
 )
 
-from handlers.menu import get_work_menu
+from handlers.menu import get_work_menu, get_admin_menu, get_registration_menu
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
 from handlers.employee import get_current_employee
@@ -70,6 +70,13 @@ async def start_registration(
     """
 
     telegram_id = update.effective_user.id
+
+    if telegram_id == ADMIN_TELEGRAM_ID:
+        await update.message.reply_text(
+            "👨‍💼 Панель администратора готова.",
+            reply_markup=get_admin_menu(),
+        )
+        return ConversationHandler.END
 
     employee = get_employee_by_telegram_id(
         telegram_id,
@@ -136,7 +143,8 @@ async def start_registration(
 
     context.user_data["registration_role"] = "picker"
     await update.message.reply_text(
-        get_message(language, "picker_welcome")
+        get_message(language, "picker_welcome"),
+        reply_markup=get_registration_menu(),
     )
 
     return FIRST_LAST_NAME
