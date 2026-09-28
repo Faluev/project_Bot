@@ -15,6 +15,10 @@ from telegram.ext import (
 from config import BOT_TOKEN, ADMIN_TELEGRAM_ID
 from database import init_database
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 logger = logging.getLogger(__name__)
 init_database()
 
@@ -75,6 +79,7 @@ async def setup_bot_commands(application):
         BotCommand("orders", "Лента заказов"),
         BotCommand("stats", "Статистика сотрудников"),
         BotCommand("timeouts", "Заказы с таймаутом"),
+        BotCommand("audit", "Журнал действий"),
         BotCommand("rejected", "Отклонённые заказы"),
         BotCommand("id", "Показать Telegram ID"),
     ]
