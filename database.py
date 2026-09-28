@@ -9,6 +9,18 @@ DATABASE_PATH = BASE_DIR / "delivery.db"
 
 # Разрешённые переходы статусов заказа.
 # Любое бизнес-действие, меняющее статус, должно проходить через эту схему.
+ORDER_STATUSES = {
+    "new",
+    "assembling",
+    "awaiting_courier",
+    "in_delivery",
+    "delivered",
+    "rejected",
+}
+
+EMPLOYEE_ROLES = {"picker", "courier"}
+APPLICATION_STATUSES = {"pending", "approved", "rejected"}
+
 ORDER_STATUS_TRANSITIONS = {
     "new": {"assembling"},
     "assembling": {"awaiting_courier"},
@@ -320,6 +332,9 @@ def create_employee_application(
     Создаёт или обновляет заявку сотрудника.
     """
 
+    if role not in EMPLOYEE_ROLES:
+        return "invalid_role"
+
     connection = get_connection()
     language = language if language in ("ru", "tg") else "ru"
 
@@ -461,6 +476,9 @@ def update_application_status(employee_id, new_status):
 
     Возвращает данные сотрудника после изменения.
     """
+
+    if new_status not in {"approved", "rejected"}:
+        return None
 
     connection = get_connection()
 
