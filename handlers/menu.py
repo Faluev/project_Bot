@@ -69,3 +69,24 @@ def get_work_menu(role, is_on_shift=False, language="ru"):
         return get_courier_menu(is_on_shift, language)
 
     return None
+
+def get_registration_menu():
+    """Стартовое меню для нового пользователя."""
+    return ReplyKeyboardMarkup(
+        [["🚀 Начать"]],
+        resize_keyboard=True,
+    )
+
+
+def get_admin_menu():
+    """Постоянное меню администратора."""
+    keyboard = [
+        ["📋 Заявки", "👥 Сотрудники"],
+        ["📦 Заказы", "📊 Статистика"],
+        ["⏰ Таймауты", "📜 Аудит"],
+        ["⚠️ Отклонённые", "🆔 Мой ID"],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+    )
