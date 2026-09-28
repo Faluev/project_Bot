@@ -508,6 +508,26 @@ def update_application_status(employee_id, new_status):
         connection.close()
 
 
+def get_employee_by_id(employee_id):
+    """Возвращает сотрудника по внутреннему ID."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT id, telegram_id, telegram_username, first_name, last_name,
+                   phone, role, transport_type, application_status,
+                   is_active, is_on_shift, language, created_at
+            FROM employees
+            WHERE id = ?
+            """,
+            (employee_id,),
+        )
+        return cursor.fetchone()
+    finally:
+        connection.close()
+
+
 def get_approved_employees():
     """Возвращает одобренных сотрудников для управления доступом."""
     connection = get_connection()
@@ -1208,7 +1228,7 @@ def get_order_timeouts(timeout_minutes=15):
         connection.close()
 
 
-def get_employee_stats():
+def get_employee_stats(employee_id=None):
     """
     Возвращает краткую статистику по сотрудникам:
     число сборок, число доставок и среднее время доставки.
@@ -1228,8 +1248,10 @@ def get_employee_stats():
                 is_active
             FROM employees
             WHERE application_status = 'approved'
+              AND (? IS NULL OR id = ?)
             ORDER BY role, last_name, first_name
-            """
+            """,
+            (employee_id, employee_id),
         )
 
         employees = cursor.fetchall()
