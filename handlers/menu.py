@@ -57,18 +57,19 @@ def get_courier_menu(is_on_shift=False, language="ru"):
     )
 
 
-def get_work_menu(role, is_on_shift=False, language="ru"):
-    """
-    Возвращает меню в зависимости от роли сотрудника.
-    """
-
+def get_work_menu_expanded(role, is_on_shift=False, language="ru"):
+    """Полное рабочее меню сотрудника."""
     if role == "picker":
         return get_picker_menu(is_on_shift, language)
-
     if role == "courier":
         return get_courier_menu(is_on_shift, language)
-
     return None
+
+
+def get_work_menu(role, is_on_shift=False, language="ru"):
+    """Свернутое рабочее меню: одна кнопка для открытия действий."""
+    return ReplyKeyboardMarkup([["☰ Меню"]], resize_keyboard=True)
+
 
 def get_registration_menu():
     """Стартовое меню для нового пользователя."""
