@@ -34,6 +34,7 @@ from database import (
 from config import ADMIN_TELEGRAM_ID, ORDER_TIMEOUT_MINUTES
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
+from handlers.menu import get_work_menu
 
 
 async def answer_callback_safely(query, text=None, show_alert=False):
@@ -53,24 +54,36 @@ async def edit_callback_message_safely(query, text, reply_markup=None):
 
 
 async def notify_employee_application_result(context, employee, text):
-    if employee["role"] != "courier":
-        await send_message_with_retry(
-            context.bot,
-            chat_id=employee["telegram_id"],
-            text=text,
-        )
-        return
+    """
+    Отправляет сотруднику результат заявки через правильного бота
+    и сразу показывает рабочее меню после одобрения.
+    """
+    bot = context.bot
+    own_bot = True
 
-    courier_bot = Bot(token=COURIER_BOT_TOKEN)
-    await courier_bot.initialize()
+    if employee["role"] == "courier":
+        bot = Bot(token=COURIER_BOT_TOKEN)
+        await bot.initialize()
+        own_bot = False
+
     try:
+        reply_markup = None
+        if text == get_message(employee["language"], "application_approved_notice"):
+            reply_markup = get_work_menu(
+                employee["role"],
+                employee["is_on_shift"],
+                employee["language"],
+            )
+
         await send_message_with_retry(
-            courier_bot,
+            bot,
             chat_id=employee["telegram_id"],
             text=text,
+            reply_markup=reply_markup,
         )
     finally:
-        await courier_bot.shutdown()
+        if not own_bot:
+            await bot.shutdown()
 
 
 def is_admin(update: Update) -> bool:
