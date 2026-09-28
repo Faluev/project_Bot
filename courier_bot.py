@@ -108,6 +108,16 @@ async def start(
     )
 
 
+async def setup_courier_bot_commands(application):
+    """Настраивает команды Telegram для курьера."""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Начать работу или регистрацию"),
+        BotCommand("cancel", "Отменить текущий диалог"),
+    ])
+
+
+
+
 application = (
     ApplicationBuilder()
     .token(COURIER_BOT_TOKEN)
@@ -116,16 +126,6 @@ application = (
 )
 application.add_error_handler(handle_application_error)
 application.bot_data["role"] = "courier"
-
-
-
-async def setup_courier_bot_commands(application):
-    """Настраивает команды Telegram для курьера."""
-    await application.bot.set_my_commands([
-        BotCommand("start", "Начать работу или регистрацию"),
-        BotCommand("cancel", "Отменить текущий диалог"),
-    ])
-
 
 
 
