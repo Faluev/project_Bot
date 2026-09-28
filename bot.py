@@ -120,7 +120,10 @@ application.bot_data["role"] = "picker"
 registration_handler = ConversationHandler(
     entry_points=[
         CommandHandler("start", start_registration),
-        MessageHandler(filters.Regex(r"^🚀 Начать$"), start_registration),
+        MessageHandler(
+            filters.Regex(r"^(🚀 Начать|👷 Регистрация сборщика)$"),
+            start_registration,
+        ),
     ],
 
     states={
