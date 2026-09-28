@@ -1,6 +1,7 @@
 import logging
 
 from telegram import (
+from handlers.employee import get_current_employee
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -10,7 +11,6 @@ from telegram.ext import ContextTypes, ConversationHandler
 from config import ADMIN_TELEGRAM_ID
 from database import (
     get_orders_for_courier,
-    get_employee_by_telegram_id,
     get_order_by_id,
     pickup_order,
     deliver_order,
@@ -125,10 +125,7 @@ async def show_courier_shift_report(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    employee = get_employee_by_telegram_id(
-        update.effective_user.id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
 
     if (
         employee is None
@@ -158,10 +155,7 @@ async def show_courier_orders(
     telegram_id = update.effective_user.id
 
     # Получаем сотрудника
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         await update.message.reply_text(
@@ -276,10 +270,7 @@ async def handle_pickup_order(
 
     telegram_id = query.from_user.id
 
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         language = "tg" if query.from_user.language_code == "tg" else "ru"
@@ -372,10 +363,7 @@ async def handle_contact_client(
     query = update.callback_query
     telegram_id = query.from_user.id
 
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
     if employee is None:
         language = "tg" if query.from_user.language_code == "tg" else "ru"
         await query.answer(get_message(language, "not_registered"), show_alert=True)
@@ -461,10 +449,7 @@ async def handle_deliver_order(
     query = update.callback_query
 
     telegram_id = query.from_user.id
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
     language = employee["language"] if employee is not None else "ru"
 
     if employee is None:
@@ -536,10 +521,7 @@ async def handle_reject_order(
     query = update.callback_query
     telegram_id = query.from_user.id
 
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         language = "tg" if query.from_user.language_code == "tg" else "ru"
@@ -594,10 +576,7 @@ async def handle_reject_reason(
     query = update.callback_query
     telegram_id = query.from_user.id
 
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         language = "tg" if query.from_user.language_code == "tg" else "ru"
@@ -684,10 +663,7 @@ async def save_custom_rejection_reason(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    employee = get_employee_by_telegram_id(
-        update.effective_user.id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
     order_id = context.user_data.pop("pending_rejection_order_id", None)
     reason = update.message.text.strip()
 
