@@ -1087,6 +1087,9 @@ def mark_order_missing_item(order_id, employee_id, item_name):
     """
     Сборщик отмечает, что товара нет в наличии.
     """
+    if not isinstance(item_name, str) or not item_name.strip():
+        return {"success": False, "reason": "invalid_item_name"}
+
     connection = get_connection()
 
     try:
@@ -1208,6 +1211,9 @@ def get_order_timeouts(timeout_minutes=15):
     """
     Возвращает заказы, которые давно не были взяты в работу.
     """
+    if not isinstance(timeout_minutes, int) or timeout_minutes <= 0:
+        return []
+
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -1523,6 +1529,11 @@ def log_order_timeout_alert(order_id, status, timeout_minutes):
     Записывает уведомление администратору о том,
     что заказ слишком долго не взят в работу.
     """
+    if status not in ORDER_STATUSES:
+        return False
+    if not isinstance(timeout_minutes, int) or timeout_minutes <= 0:
+        return False
+
     connection = get_connection()
 
     try:
@@ -2118,6 +2129,9 @@ def reject_order(order_id, employee_id, reason):
     """
     Курьер отклоняет заказ и указывает причину.
     """
+    if not isinstance(reason, str) or not reason.strip():
+        return {"success": False, "reason": "invalid_reason"}
+
     connection = get_connection()
 
     try:
