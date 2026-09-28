@@ -19,6 +19,7 @@ from database import (
     update_application_status,
     get_admin_orders_feed,
     get_order_history,
+    get_admin_audit_log,
     get_order_items,
     get_order_timeouts,
     get_employee_stats,
@@ -416,6 +417,52 @@ async def show_order_history(
     await query.edit_message_text(message)
 
 
+
+async def show_admin_audit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Показывает администратору последние действия системы."""
+    if not is_admin(update):
+        await update.message.reply_text("⛔ У вас нет доступа к этому разделу.")
+        return
+
+    events = get_admin_audit_log(20)
+    if not events:
+        await update.message.reply_text("📜 Журнал действий пока пуст.")
+        return
+
+    lines = ["📜 Журнал действий", ""]
+    for event in events:
+        employee = event["employee_name"]
+        if employee:
+            role = "сборщик" if event["employee_role"] == "picker" else "курьер"
+            actor = f"{employee} ({role})"
+        else:
+            actor = "система"
+
+        order_label = (
+            f"заказ № {event['order_number']}"
+            if event["order_number"]
+            else "без заказа"
+        )
+        transition = ""
+        if event["old_status"] or event["new_status"]:
+            transition = f" [{event['old_status'] or '—'} → {event['new_status'] or '—'}]"
+
+        lines.append(
+            f"• {event['created_at']} — {actor}"
+        )
+        lines.append(
+            f"  {order_label} — {event['action']}{transition}"
+        )
+        if event["details"]:
+            lines.append(f"  {event['details']}")
+        lines.append("")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def show_order_timeouts(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -743,6 +790,7 @@ def get_admin_handlers():
             "timeouts",
             show_order_timeouts,
         ),
+        CommandHandler("audit", show_admin_audit),
         CommandHandler(
             "stats",
             show_employee_stats,
