@@ -1617,5 +1617,72 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(employee["application_status"], "pending")
             self.assertEqual(employee["is_active"], 1)
 
+
+    def test_invalid_timeout_values_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/invalid_timeout.db"
+            database.init_database()
+
+            self.assertEqual(database.get_order_timeouts(0), [])
+            self.assertEqual(database.get_order_timeouts(-1), [])
+            self.assertFalse(database.log_order_timeout_alert(1, "new", 0))
+            self.assertFalse(database.log_order_timeout_alert(1, "invalid", 15))
+
+    def test_reject_order_requires_reason(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/empty_rejection_reason.db"
+            database.init_database()
+
+            database.create_employee_application(
+                932, "courier", "Ivan", "Courier", "+992932", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id
+                ) VALUES ('REJ-EMPTY', 'Client', 'in_delivery', 1)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.reject_order(1, 1, "   ")
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "invalid_reason")
+            self.assertEqual(database.get_order_by_id(1)["status"], "in_delivery")
+
+    def test_missing_item_requires_item_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/empty_item.db"
+            database.init_database()
+
+            database.create_employee_application(
+                933, "picker", "Ivan", "Picker", "+992933", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, picker_id
+                ) VALUES ('ITEM-EMPTY', 'Client', 'assembling', 1)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.mark_order_missing_item(1, 1, "   ")
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "invalid_item_name")
+            self.assertEqual(database.get_order_by_id(1)["status"], "assembling")
+
 if __name__ == "__main__":
     unittest.main()
