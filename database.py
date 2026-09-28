@@ -7,6 +7,23 @@ BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "delivery.db"
 
 
+# Разрешённые переходы статусов заказа.
+# Любое бизнес-действие, меняющее статус, должно проходить через эту схему.
+ORDER_STATUS_TRANSITIONS = {
+    "new": {"assembling"},
+    "assembling": {"awaiting_courier"},
+    "awaiting_courier": {"in_delivery"},
+    "in_delivery": {"delivered", "rejected"},
+    "delivered": set(),
+    "rejected": set(),
+}
+
+
+def is_valid_order_transition(old_status, new_status):
+    """Возвращает True, если переход статуса разрешён бизнес-логикой."""
+    return new_status in ORDER_STATUS_TRANSITIONS.get(old_status, set())
+
+
 def get_connection():
     """
     Создаёт соединение с базой данных.
@@ -834,7 +851,7 @@ def start_order_assembly(order_id, employee_id):
             }
 
         # Заказ уже кто-то взял
-        if order["status"] != "new":
+        if not is_valid_order_transition(order["status"], "assembling"):
             connection.rollback()
             return {
                 "success": False,
@@ -946,7 +963,7 @@ def complete_order_assembly(order_id, employee_id):
             }
 
         # Проверяем статус
-        if order["status"] != "assembling":
+        if not is_valid_order_transition(order["status"], "awaiting_courier"):
             connection.rollback()
 
             return {
@@ -1785,7 +1802,7 @@ def pickup_order(order_id, employee_id):
             }
 
         # Заказ должен ждать курьера
-        if order["status"] != "awaiting_courier":
+        if not is_valid_order_transition(order["status"], "in_delivery"):
             connection.rollback()
             return {
                 "success": False,
@@ -1890,7 +1907,7 @@ def deliver_order(order_id, employee_id):
             connection.rollback()
             return {"success": False, "reason": "not_found"}
 
-        if order["status"] != "in_delivery":
+        if not is_valid_order_transition(order["status"], "delivered"):
             connection.rollback()
             return {
                 "success": False,
@@ -1986,7 +2003,7 @@ def reject_order(order_id, employee_id, reason):
             connection.rollback()
             return {"success": False, "reason": "not_found"}
 
-        if order["status"] != "in_delivery":
+        if not is_valid_order_transition(order["status"], "rejected"):
             connection.rollback()
             return {
                 "success": False,
