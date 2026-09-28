@@ -141,6 +141,13 @@ async def start_registration(
     # НОВАЯ РЕГИСТРАЦИЯ
     # ==========================================
 
+    if update.message.text != "🚀 Начать":
+        await update.message.reply_text(
+            "👋 Добро пожаловать!\n\nНажмите «🚀 Начать», чтобы подать заявку.",
+            reply_markup=get_registration_menu(),
+        )
+        return ConversationHandler.END
+
     context.user_data["registration_role"] = "picker"
     await update.message.reply_text(
         get_message(language, "picker_welcome"),
