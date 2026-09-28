@@ -944,9 +944,11 @@ class OrderTimeoutTests(unittest.TestCase):
             database.DATABASE_PATH = f"{temp_dir}/picker_registration.db"
             database.init_database()
             update = self._registration_update(800, contact_phone="+992900000001")
+            bot = SimpleNamespace(send_message=AsyncMock())
             context = SimpleNamespace(
                 user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
                 bot_data={"role": "picker"},
+                bot=bot,
             )
 
             result = asyncio.run(registration.get_phone(update, context))
@@ -956,6 +958,12 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
             employee = database.get_employee_by_telegram_id(800, "picker")
             self.assertEqual(employee["phone"], "+992900000001")
+            bot.send_message.assert_awaited_once()
+            self.assertEqual(
+                bot.send_message.await_args.kwargs["chat_id"],
+                registration.ADMIN_TELEGRAM_ID,
+            )
+            self.assertIn("Новая заявка сотрудника", bot.send_message.await_args.kwargs["text"])
 
     def test_courier_registration_removes_phone_keyboard_after_contact(self):
         with tempfile.TemporaryDirectory() as temp_dir:
