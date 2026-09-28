@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 from telegram.ext import (
@@ -357,8 +361,8 @@ async def save_picker_application(
     )
     context.user_data.pop("registration_role", None)
 
-    print(
-        "Заявка сотрудника:",
+    logger.info(
+        "Employee application saved: result=%s telegram_id=%s role=%s",
         result,
         telegram_id,
         role,
