@@ -63,10 +63,39 @@ from handlers.language import toggle_language
 application = (
     ApplicationBuilder()
     .token(BOT_TOKEN)
+    .post_init(setup_bot_commands)
     .build()
 )
 application.add_error_handler(handle_application_error)
 application.bot_data["role"] = "picker"
+
+
+
+async def setup_bot_commands(application):
+    """Настраивает команды Telegram для сотрудников и администратора."""
+    employee_commands = [
+        BotCommand("start", "Начать работу или регистрацию"),
+        BotCommand("cancel", "Отменить текущий диалог"),
+    ]
+    admin_commands = [
+        BotCommand("start", "Начать работу"),
+        BotCommand("cancel", "Отменить текущий диалог"),
+        BotCommand("applications", "Заявки сотрудников"),
+        BotCommand("employees", "Список сотрудников"),
+        BotCommand("orders", "Лента заказов"),
+        BotCommand("stats", "Статистика сотрудников"),
+        BotCommand("timeouts", "Заказы с таймаутом"),
+        BotCommand("rejected", "Отклонённые заказы"),
+        BotCommand("id", "Показать Telegram ID"),
+    ]
+
+    await application.bot.set_my_commands(employee_commands)
+    await application.bot.set_my_commands(
+        admin_commands,
+        scope=BotCommandScopeChat(ADMIN_TELEGRAM_ID),
+    )
+
+
 
 
 # ==========================================
