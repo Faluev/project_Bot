@@ -1115,7 +1115,9 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertEqual(result, registration.FIRST_LAST_NAME)
         self.assertEqual(context.user_data["registration_role"], "picker")
         self.assertTrue(update.message.reply_text.await_count)
-        self.assertIn("Имя", update.message.reply_text.await_args.args[0])
+        registration_prompt = update.message.reply_text.await_args.args[0].lower()
+        self.assertIn("имя", registration_prompt)
+        self.assertIn("фамили", registration_prompt)
 
     def test_admin_start_opens_admin_menu(self):
         update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="/start")
