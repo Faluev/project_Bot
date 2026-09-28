@@ -1,5 +1,7 @@
 import asyncio
 
+from telegram.error import NetworkError, RetryAfter, TimedOut
+
 
 async def send_message_with_retry(
     bot,
@@ -8,7 +10,7 @@ async def send_message_with_retry(
     reply_markup=None,
     attempts=3,
 ):
-    """Повторяет отправку сообщения при временной ошибке Telegram/сети."""
+    """Повторяет отправку сообщения только при временных сетевых ошибках."""
     last_error = None
 
     for attempt in range(attempts):
@@ -18,7 +20,11 @@ async def send_message_with_retry(
                 text=text,
                 reply_markup=reply_markup,
             )
-        except Exception as error:
+        except RetryAfter as error:
+            last_error = error
+            if attempt < attempts - 1:
+                await asyncio.sleep(error.retry_after)
+        except (NetworkError, TimedOut) as error:
             last_error = error
             if attempt < attempts - 1:
                 await asyncio.sleep(1)
