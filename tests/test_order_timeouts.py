@@ -1099,8 +1099,11 @@ class OrderTimeoutTests(unittest.TestCase):
 
 
     def test_admin_picker_registration_button_starts_picker_flow(self):
-        update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="👷 Регистрация сборщика")
-        context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/admin_picker_registration.db"
+            database.init_database()
+            update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="👷 Регистрация сборщика")
+            context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
 
         result = asyncio.run(registration.start_registration(update, context))
 
@@ -1259,7 +1262,7 @@ class OrderTimeoutTests(unittest.TestCase):
             bot = SimpleNamespace(send_message=AsyncMock())
             update = self._registration_update(912, contact_phone="+992912")
             context = SimpleNamespace(
-                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
+                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker", "phone": "+992912"},
                 bot_data={"role": "picker"},
                 bot=bot,
             )
@@ -1284,7 +1287,7 @@ class OrderTimeoutTests(unittest.TestCase):
             bot = SimpleNamespace(send_message=AsyncMock())
             update = self._registration_update(913, contact_phone="+992913")
             context = SimpleNamespace(
-                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
+                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker", "phone": "+992913"},
                 bot_data={"role": "picker"},
                 bot=bot,
             )
