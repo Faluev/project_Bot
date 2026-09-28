@@ -1830,6 +1830,7 @@ def get_admin_audit_log(limit=20):
             """
             SELECT
                 al.id,
+                al.employee_id,
                 al.action,
                 al.old_status,
                 al.new_status,
