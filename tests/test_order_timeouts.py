@@ -1318,5 +1318,272 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertNotIn("🔴 Начать смену", on_labels)
 
 
+    def test_application_approval_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/approval_idempotent.db"
+            database.init_database()
+
+            database.create_employee_application(
+                920, "worker", "Ivan", "Ivanov", "+992920", "picker"
+            )
+
+            first = database.update_application_status(1, "approved")
+            second = database.update_application_status(1, "approved")
+
+            self.assertIsNotNone(first)
+            self.assertEqual(first["application_status"], "approved")
+            self.assertIsNone(second)
+
+            employee = database.get_employee_by_id(1)
+            self.assertEqual(employee["application_status"], "approved")
+            self.assertEqual(employee["is_active"], 1)
+
+    def test_rejected_application_cannot_be_approved_without_resubmission(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/reject_then_approve.db"
+            database.init_database()
+
+            database.create_employee_application(
+                921, "worker", "Ivan", "Ivanov", "+992921", "picker"
+            )
+
+            rejected = database.update_application_status(1, "rejected")
+            approved = database.update_application_status(1, "approved")
+
+            self.assertEqual(rejected["application_status"], "rejected")
+            self.assertIsNone(approved)
+
+            employee = database.get_employee_by_id(1)
+            self.assertEqual(employee["application_status"], "rejected")
+            self.assertEqual(employee["is_active"], 0)
+
+    def test_disabled_employee_cannot_start_shift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/disabled_shift.db"
+            database.init_database()
+
+            database.create_employee_application(
+                922, "worker", "Ivan", "Ivanov", "+992922", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            database.set_employee_access(1, 0)
+
+            result = database.toggle_employee_shift(1)
+
+            self.assertIsNone(result)
+            employee = database.get_employee_by_id(1)
+            self.assertEqual(employee["is_active"], 0)
+            self.assertEqual(employee["is_on_shift"], 0)
+
+    def test_courier_cannot_deliver_another_couriers_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/wrong_courier.db"
+            database.init_database()
+
+            database.create_employee_application(
+                923, "courier_a", "A", "Courier", "+992923", "courier", "car"
+            )
+            database.create_employee_application(
+                924, "courier_b", "B", "Courier", "+992924", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            database.update_application_status(2, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id
+                ) VALUES ('OWNER-1', 'Client', 'in_delivery', 1)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.deliver_order(1, 2)
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "not_courier")
+
+            order = database.get_order_by_id(1)
+            self.assertEqual(order["status"], "in_delivery")
+            self.assertEqual(order["courier_id"], 1)
+
+    def test_reject_order_records_reason_and_blocks_second_rejection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/reject_once.db"
+            database.init_database()
+
+            database.create_employee_application(
+                925, "courier", "Ivan", "Courier", "+992925", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id
+                ) VALUES ('REJ-ONCE', 'Client', 'in_delivery', 1)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            first = database.reject_order(1, 1, "Клиент отказался")
+            second = database.reject_order(1, 1, "Другая причина")
+
+            self.assertTrue(first["success"])
+            self.assertFalse(second["success"])
+            self.assertEqual(second["reason"], "wrong_status")
+
+            history = database.get_order_history(1)
+            reject_events = [
+                event for event in history if event["action"] == "reject_order"
+            ]
+            self.assertEqual(len(reject_events), 1)
+            self.assertIn("Клиент отказался", reject_events[0]["details"])
+
+    def test_rejected_order_rejects_invalid_admin_resolution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/invalid_resolution.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status
+                ) VALUES ('REJ-INVALID', 'Client', 'rejected')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.resolve_rejected_order(1, "destroy")
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "invalid_resolution")
+
+            history = database.get_order_history(1)
+            self.assertEqual(len(history), 0)
+
+    def test_rejected_order_resolution_is_recorded_in_audit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/resolution_audit.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status
+                ) VALUES ('REJ-AUDIT', 'Client', 'rejected')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.resolve_rejected_order(
+                1,
+                "write_off",
+                admin_telegram_id=123456,
+            )
+
+            self.assertTrue(result["success"])
+
+            events = database.get_admin_audit_log(10)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["action"], "write_off")
+            self.assertIn("123456", events[0]["details"])
+
+    def test_role_access_change_does_not_affect_other_role_shift(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/role_shift_isolation.db"
+            database.init_database()
+
+            database.create_employee_application(
+                926, "dual", "Dual", "User", "+992926", "picker"
+            )
+            database.create_employee_application(
+                926, "dual", "Dual", "User", "+992926", "courier", "bike"
+            )
+            database.update_application_status(1, "approved")
+            database.update_application_status(2, "approved")
+            database.toggle_employee_shift(1)
+            database.toggle_employee_shift(2)
+
+            database.set_employee_access(1, 0)
+
+            picker = database.get_employee_by_id(1)
+            courier = database.get_employee_by_id(2)
+
+            self.assertEqual((picker["is_active"], picker["is_on_shift"]), (0, 0))
+            self.assertEqual((courier["is_active"], courier["is_on_shift"]), (1, 1))
+
+    def test_timeout_alert_creates_auditable_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/timeout_audit.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status
+                ) VALUES ('TIMEOUT-1', 'Client', 'new')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.log_order_timeout_alert(1, "new", 15)
+
+            self.assertTrue(result)
+            events = database.get_admin_audit_log(10)
+            self.assertEqual(events[0]["action"], "timeout_alert")
+            self.assertEqual(events[0]["old_status"], "new")
+            self.assertEqual(events[0]["new_status"], "new")
+            self.assertIn("15 минут", events[0]["details"])
+
+    def test_order_history_contains_full_lifecycle_actor_sequence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/lifecycle_audit.db"
+            database.init_database()
+
+            database.create_employee_application(
+                927, "picker", "Pick", "Worker", "+992927", "picker"
+            )
+            database.create_employee_application(
+                928, "courier", "Cour", "Worker", "+992928", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            database.update_application_status(2, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status
+                ) VALUES ('LIFE-1', 'Client', 'awaiting_courier')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            picked = database.pickup_order(1, 2)
+            delivered = database.deliver_order(1, 2)
+
+            self.assertTrue(picked["success"])
+            self.assertTrue(delivered["success"])
+
+            history = database.get_order_history(1)
+            actions = [event["action"] for event in history]
+            actors = [event["employee_id"] for event in history]
+
+            self.assertEqual(actions, ["pickup_order", "deliver_order"])
+            self.assertEqual(actors, [2, 2])
+
+
 if __name__ == "__main__":
     unittest.main()
