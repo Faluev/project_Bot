@@ -125,6 +125,43 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertIn("Душанбе, ул. Ленина 10", message)
         self.assertIn("Курьер уже в пути.", message)
 
+    def test_get_admin_stats_summary_counts_orders_and_staff(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/admin_stats.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES
+                    (3301, 'Pick', 'One', 'picker', 'approved', 1, 1),
+                    (3302, 'Cour', 'One', 'courier', 'approved', 1, 0)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id
+                ) VALUES
+                    ('SUM-1', 'Client 1', 'delivered', 2),
+                    ('SUM-2', 'Client 2', 'rejected', 2),
+                    ('SUM-3', 'Client 3', 'new', NULL)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            summary = database.get_admin_stats_summary()
+
+            self.assertEqual(summary["total_orders"], 3)
+            self.assertEqual(summary["delivered_orders"], 1)
+            self.assertEqual(summary["rejected_orders"], 1)
+            self.assertEqual(summary["active_employees"], 2)
+            self.assertEqual(summary["on_shift_employees"], 1)
+
     def test_get_employee_stats_returns_counts_and_average_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = f"{temp_dir}/test_delivery.db"
