@@ -55,7 +55,10 @@ async def show_current_orders(
     telegram_id = update.effective_user.id
 
     # Получаем сотрудника
-    employee = get_employee_by_telegram_id(telegram_id)
+    employee = get_employee_by_telegram_id(
+        telegram_id,
+        "picker",
+    )
     language = _employee_language(employee, update.effective_user)
 
     if employee is None:
@@ -204,7 +207,8 @@ async def start_assembly(
 
     # Получаем сотрудника
     employee = get_employee_by_telegram_id(
-        telegram_id
+        telegram_id,
+        "picker",
     )
     language = _employee_language(employee, query.from_user)
 
@@ -311,7 +315,8 @@ async def complete_assembly(
 
     # Получаем сотрудника
     employee = get_employee_by_telegram_id(
-        telegram_id
+        telegram_id,
+        "picker",
     )
     language = _employee_language(employee, query.from_user)
 
@@ -383,7 +388,10 @@ async def handle_missing_item(
     query = update.callback_query
     telegram_id = query.from_user.id
 
-    employee = get_employee_by_telegram_id(telegram_id)
+    employee = get_employee_by_telegram_id(
+        telegram_id,
+        "picker",
+    )
     language = _employee_language(employee, query.from_user)
 
     if employee is None:
@@ -436,7 +444,10 @@ async def save_missing_item(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    employee = get_employee_by_telegram_id(update.effective_user.id)
+    employee = get_employee_by_telegram_id(
+        update.effective_user.id,
+        "picker",
+    )
     order_id = context.user_data.get("missing_item_order_id")
     item_name = update.message.text.strip()
 
@@ -488,7 +499,10 @@ async def cancel_missing_item(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     context.user_data.pop("missing_item_order_id", None)
-    employee = get_employee_by_telegram_id(update.effective_user.id)
+    employee = get_employee_by_telegram_id(
+        update.effective_user.id,
+        "picker",
+    )
     language = _employee_language(employee, update.effective_user)
     await update.message.reply_text(get_message(language, "missing_cancelled"))
     return ConversationHandler.END
@@ -498,7 +512,10 @@ async def show_picker_shift_report(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    employee = get_employee_by_telegram_id(update.effective_user.id)
+    employee = get_employee_by_telegram_id(
+        update.effective_user.id,
+        "picker",
+    )
 
     if (
         employee is None

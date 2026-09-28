@@ -63,16 +63,14 @@ async def start(
     telegram_id = update.effective_user.id
 
     employee = get_employee_by_telegram_id(
-        telegram_id
+        telegram_id,
+        "courier",
     )
 
     if employee is None:
         return await start_courier_registration(update, context)
 
-    if (
-        employee["role"] == "courier"
-        and employee["application_status"] == "rejected"
-    ):
+    if employee["application_status"] == "rejected":
         return await start_courier_registration(update, context)
 
     if employee["application_status"] == "pending":
@@ -92,15 +90,6 @@ async def start(
     if employee["is_active"] != 1:
         await update.message.reply_text(
                 get_message(employee["language"], "disabled_access")
-        )
-        return
-
-    if employee["role"] != "courier":
-        await update.message.reply_text(
-            "⛔ Этот бот предназначен только "
-            "для курьеров.\n\n"
-            "Ваша зарегистрированная роль "
-            "не является ролью курьера."
         )
         return
 
@@ -125,6 +114,7 @@ application = (
     .build()
 )
 application.add_error_handler(handle_application_error)
+application.bot_data["role"] = "courier"
 
 
 courier_registration_handler = ConversationHandler(

@@ -22,25 +22,12 @@ def get_connection():
 
     return connection
 
-def init_database():
-    """
-    Создаёт таблицы базы данных,
-    если они ещё не существуют.
-    """
-
-    connection = get_connection()
-
-    cursor = connection.cursor()
-
-    # ==========================================
-    # 1. СОТРУДНИКИ
-    # ==========================================
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS employees (
+# Один Telegram-аккаунт может иметь по одной записи на каждую роль
+# (сборщик и курьер), поэтому уникальна пара (telegram_id, role).
+EMPLOYEES_TABLE_COLUMNS = """
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            telegram_id INTEGER UNIQUE NOT NULL,
+            telegram_id INTEGER NOT NULL,
             telegram_username TEXT,
 
             first_name TEXT NOT NULL,
@@ -59,9 +46,80 @@ def init_database():
 
             language TEXT NOT NULL DEFAULT 'ru',
 
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            UNIQUE (telegram_id, role)
+"""
+
+EMPLOYEES_COPY_COLUMNS = (
+    "id, telegram_id, telegram_username, first_name, last_name, phone, "
+    "role, transport_type, application_status, is_active, is_on_shift, "
+    "language, created_at"
+)
+
+
+def _employees_has_unique_telegram_id(cursor):
+    """
+    Проверяет, осталось ли в старой базе ограничение
+    "один Telegram ID - одна запись".
+    """
+    cursor.execute("PRAGMA index_list(employees)")
+
+    for index in cursor.fetchall():
+        if not index["unique"]:
+            continue
+
+        cursor.execute(f'PRAGMA index_info("{index["name"]}")')
+
+        if [row["name"] for row in cursor.fetchall()] == ["telegram_id"]:
+            return True
+
+    return False
+
+
+def _migrate_employees_unique_telegram_role(cursor):
+    """
+    Переносит сотрудников из старой таблицы (UNIQUE telegram_id)
+    в таблицу с UNIQUE (telegram_id, role). Данные и id сохраняются.
+    """
+    if not _employees_has_unique_telegram_id(cursor):
+        return
+
+    cursor.execute(f"CREATE TABLE employees_new ({EMPLOYEES_TABLE_COLUMNS})")
+    cursor.execute(
+        f"""
+        INSERT INTO employees_new ({EMPLOYEES_COPY_COLUMNS})
+        SELECT {EMPLOYEES_COPY_COLUMNS} FROM employees
+        """
+    )
+    cursor.execute("DROP TABLE employees")
+    cursor.execute("ALTER TABLE employees_new RENAME TO employees")
+
+
+def init_database():
+    """
+    Создаёт таблицы базы данных,
+    если они ещё не существуют.
+    """
+
+    connection = get_connection()
+
+    cursor = connection.cursor()
+
+    # Оба бота вызывают init_database при старте одновременно.
+    # Вся схема создаётся и мигрирует одной транзакцией: второй процесс
+    # дожидается первого и видит уже готовую базу.
+    # PRAGMA foreign_keys нельзя менять внутри транзакции.
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("BEGIN IMMEDIATE")
+
+    # ==========================================
+    # 1. СОТРУДНИКИ
+    # ==========================================
+
+    cursor.execute(
+        f"CREATE TABLE IF NOT EXISTS employees ({EMPLOYEES_TABLE_COLUMNS})"
+    )
 
     # Проверяем структуру уже существующей базы.
     # Это нужно, потому что база могла быть создана
@@ -84,6 +142,8 @@ def init_database():
         cursor.execute(
             "ALTER TABLE employees ADD COLUMN language TEXT NOT NULL DEFAULT 'ru'"
         )
+
+    _migrate_employees_unique_telegram_role(cursor)
 
     # ==========================================
     # 2. ЗАКАЗЫ
@@ -183,9 +243,12 @@ def init_database():
     connection.commit()
     connection.close()
 
-def get_employee_by_telegram_id(telegram_id):
+def get_employee_by_telegram_id(telegram_id, role=None):
     """
     Находит сотрудника по его Telegram ID.
+
+    У одного Telegram ID может быть по записи на каждую роль,
+    поэтому боты передают свою роль ("picker" или "courier").
     """
 
     connection = get_connection()
@@ -193,7 +256,7 @@ def get_employee_by_telegram_id(telegram_id):
     try:
         cursor = connection.cursor()
 
-        cursor.execute("""
+        query = """
             SELECT
                 id,
                 telegram_id,
@@ -210,7 +273,16 @@ def get_employee_by_telegram_id(telegram_id):
                 created_at
             FROM employees
             WHERE telegram_id = ?
-        """, (telegram_id,))
+        """
+        params = [telegram_id]
+
+        if role is not None:
+            query += " AND role = ?"
+            params.append(role)
+
+        query += " ORDER BY id"
+
+        cursor.execute(query, params)
 
         return cursor.fetchone()
 
@@ -243,8 +315,9 @@ def create_employee_application(
             SELECT id, application_status
             FROM employees
             WHERE telegram_id = ?
+              AND role = ?
             """,
-            (telegram_id,),
+            (telegram_id, role),
         )
 
         existing_employee = cursor.fetchone()
@@ -277,7 +350,7 @@ def create_employee_application(
                     language = ?,
                     application_status = 'pending',
                     is_active = 1
-                WHERE telegram_id = ?
+                WHERE id = ?
                 """,
                 (
                     telegram_username,
@@ -287,7 +360,7 @@ def create_employee_application(
                     role,
                     transport_type,
                     language,
-                    telegram_id,
+                    existing_employee["id"],
                 ),
             )
 

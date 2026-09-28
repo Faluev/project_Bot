@@ -10,7 +10,10 @@ async def toggle_shift(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    employee = get_employee_by_telegram_id(update.effective_user.id)
+    employee = get_employee_by_telegram_id(
+        update.effective_user.id,
+        context.bot_data.get("role"),
+    )
 
     if employee is None or employee["application_status"] != "approved":
         await update.message.reply_text(

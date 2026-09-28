@@ -95,7 +95,7 @@ async def show_my_id(
     telegram_id = update.effective_user.id
 
     await update.message.reply_text(
-        f"1489820047: {telegram_id}"
+        f"Ваш Telegram ID: {telegram_id}"
     )
 
 

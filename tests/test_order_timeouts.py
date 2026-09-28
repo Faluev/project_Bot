@@ -4,8 +4,14 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from telegram import ReplyKeyboardRemove
+from telegram.ext import ConversationHandler
 
 import database
+from handlers import registration
 from handlers.courier_orders import build_client_contact_message
 from handlers.registration import build_admin_contact_message
 from handlers.retry import send_message_with_retry
@@ -608,6 +614,220 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(alerts[0]["details"], "Missing: Milk")
             self.assertTrue(database.log_missing_item_alert_sent(alerts[0]["event_id"], 1))
             self.assertEqual(database.get_pending_missing_item_alerts(), [])
+
+    def _create_legacy_database(self, path):
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            """
+            CREATE TABLE employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER UNIQUE NOT NULL,
+                telegram_username TEXT,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                phone TEXT,
+                role TEXT NOT NULL,
+                transport_type TEXT,
+                application_status TEXT NOT NULL DEFAULT 'pending',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                is_on_shift INTEGER NOT NULL DEFAULT 0,
+                language TEXT NOT NULL DEFAULT 'ru',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_number TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL DEFAULT 'new',
+                picker_id INTEGER,
+                courier_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (picker_id) REFERENCES employees(id),
+                FOREIGN KEY (courier_id) REFERENCES employees(id)
+            );
+            INSERT INTO employees (
+                telegram_id, first_name, last_name, role,
+                application_status, is_on_shift, language
+            ) VALUES
+                (100, 'Pick', 'One', 'picker', 'approved', 1, 'tg'),
+                (200, 'Cour', 'Two', 'courier', 'approved', 0, 'ru');
+            INSERT INTO orders (order_number, status, picker_id, courier_id)
+            VALUES ('LEGACY-1', 'in_delivery', 1, 2);
+            """
+        )
+        connection.commit()
+        connection.close()
+
+    def test_legacy_database_keeps_employees_and_allows_two_roles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/legacy_roles.db"
+            self._create_legacy_database(database.DATABASE_PATH)
+
+            database.init_database()
+            database.init_database()
+
+            picker = database.get_employee_by_telegram_id(100, "picker")
+            self.assertEqual(
+                (picker["id"], picker["is_on_shift"], picker["language"]),
+                (1, 1, "tg"),
+            )
+            self.assertEqual(database.get_employee_by_telegram_id(200)["id"], 2)
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            order = connection.execute(
+                "SELECT picker_id, courier_id FROM orders"
+            ).fetchone()
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            connection.close()
+            self.assertEqual(order, (1, 2))
+            self.assertEqual(violations, [])
+
+            self.assertEqual(
+                database.create_employee_application(
+                    100, "user", "Pick", "One", "+992", "courier", "bike"
+                ),
+                "created",
+            )
+
+    def test_same_telegram_id_can_hold_picker_and_courier_roles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/two_roles.db"
+            database.init_database()
+
+            self.assertEqual(
+                database.create_employee_application(
+                    700, "user", "Ali", "Aliev", "+992", "picker"
+                ),
+                "created",
+            )
+            self.assertEqual(
+                database.create_employee_application(
+                    700, "user", "Ali", "Aliev", "+992", "courier", "bike"
+                ),
+                "created",
+            )
+            self.assertEqual(
+                database.create_employee_application(
+                    700, "user", "Ali", "Aliev", "+992", "courier", "bike"
+                ),
+                "already_pending",
+            )
+
+            picker = database.get_employee_by_telegram_id(700, "picker")
+            courier = database.get_employee_by_telegram_id(700, "courier")
+            self.assertNotEqual(picker["id"], courier["id"])
+            self.assertEqual(courier["transport_type"], "bike")
+
+            database.update_application_status(picker["id"], "approved")
+
+            self.assertEqual(
+                database.get_employee_by_telegram_id(700, "picker")["application_status"],
+                "approved",
+            )
+            self.assertEqual(
+                database.get_employee_by_telegram_id(700, "courier")["application_status"],
+                "pending",
+            )
+
+    def test_rejected_application_is_resubmitted_only_for_its_own_role(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/resubmit.db"
+            database.init_database()
+            database.create_employee_application(
+                710, "user", "Ali", "Aliev", "+992", "picker"
+            )
+            database.create_employee_application(
+                710, "user", "Ali", "Aliev", "+992", "courier", "bike"
+            )
+            courier = database.get_employee_by_telegram_id(710, "courier")
+            database.update_application_status(courier["id"], "rejected")
+
+            result = database.create_employee_application(
+                710, "user", "Ali", "Aliev", "+992", "courier", "car"
+            )
+
+            self.assertEqual(result, "recreated")
+            courier = database.get_employee_by_telegram_id(710, "courier")
+            picker = database.get_employee_by_telegram_id(710, "picker")
+            self.assertEqual(
+                (courier["application_status"], courier["transport_type"]),
+                ("pending", "car"),
+            )
+            self.assertEqual(picker["application_status"], "pending")
+
+    def test_parallel_init_on_legacy_database_migrates_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/parallel.db"
+            self._create_legacy_database(database.DATABASE_PATH)
+
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = [executor.submit(database.init_database) for _ in range(6)]
+                for future in futures:
+                    future.result()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            count = connection.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
+            connection.close()
+            self.assertEqual(count, 2)
+
+    def _registration_update(self, telegram_id, contact_phone=None, text=None):
+        message = SimpleNamespace(
+            contact=SimpleNamespace(phone_number=contact_phone)
+            if contact_phone
+            else None,
+            text=text,
+            reply_text=AsyncMock(),
+        )
+        return SimpleNamespace(
+            message=message,
+            effective_user=SimpleNamespace(
+                id=telegram_id, username="tester", language_code="ru"
+            ),
+        )
+
+    def test_picker_registration_removes_phone_keyboard_after_contact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_registration.db"
+            database.init_database()
+            update = self._registration_update(800, contact_phone="+992900000001")
+            context = SimpleNamespace(
+                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
+                bot_data={"role": "picker"},
+            )
+
+            result = asyncio.run(registration.get_phone(update, context))
+
+            self.assertEqual(result, ConversationHandler.END)
+            reply_markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+            self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
+            employee = database.get_employee_by_telegram_id(800, "picker")
+            self.assertEqual(employee["phone"], "+992900000001")
+
+    def test_courier_registration_removes_phone_keyboard_after_contact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_registration.db"
+            database.init_database()
+            update = self._registration_update(801, contact_phone="+992900000002")
+            context = SimpleNamespace(
+                user_data={"full_name": "Ivan Ivanov", "registration_role": "courier"},
+                bot_data={"role": "courier"},
+            )
+
+            result = asyncio.run(registration.get_phone(update, context))
+
+            self.assertEqual(result, registration.COURIER_TRANSPORT)
+            reply_markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+            self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
+
+    def test_cancel_registration_removes_leftover_keyboard(self):
+        update = self._registration_update(802)
+        context = SimpleNamespace(user_data={"phone": "+992"}, bot_data={})
+
+        result = asyncio.run(registration.cancel_registration(update, context))
+
+        self.assertEqual(result, ConversationHandler.END)
+        reply_markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+        self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
 
 
 if __name__ == "__main__":

@@ -19,8 +19,7 @@ from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
 
 # Состояния регистрации
-FIRST_LAST_NAME, PHONE, ROLE, ADMIN_CONTACT = range(4)
-COURIER_TRANSPORT = 4
+FIRST_LAST_NAME, PHONE, ADMIN_CONTACT, COURIER_TRANSPORT = range(4)
 
 
 def get_preferred_language(update, context):
@@ -68,7 +67,8 @@ async def start_registration(
     telegram_id = update.effective_user.id
 
     employee = get_employee_by_telegram_id(
-        telegram_id
+        telegram_id,
+        "picker",
     )
 
     language = (
@@ -76,13 +76,6 @@ async def start_registration(
         if employee is not None
         else get_preferred_language(update, context)
     )
-
-    if employee is not None and employee["role"] != "picker":
-        await update.message.reply_text(
-            "⛔ Этот бот предназначен для сборщиков. "
-            "Для работы курьером зарегистрируйтесь в боте курьера."
-        )
-        return ConversationHandler.END
 
     # ==========================================
     # СОТРУДНИК ОДОБРЕН
@@ -149,15 +142,10 @@ async def start_courier_registration(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     telegram_id = update.effective_user.id
-    employee = get_employee_by_telegram_id(telegram_id)
-
-    if employee is not None and employee["role"] != "courier":
-        role_name = "сборщик" if employee["role"] == "picker" else employee["role"]
-        await update.message.reply_text(
-            f"⛔ Этот Telegram-аккаунт уже зарегистрирован как {role_name}. "
-            "Для другой роли нужен отдельный Telegram-аккаунт."
-        )
-        return ConversationHandler.END
+    employee = get_employee_by_telegram_id(
+        telegram_id,
+        "courier",
+    )
 
     language = (
         employee["language"]
@@ -307,41 +295,20 @@ async def get_phone(
         )
         return COURIER_TRANSPORT
 
-    keyboard = ReplyKeyboardMarkup(
-        [[get_message(language, "registration_picker_role")]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-    await update.message.reply_text(
-        get_message(
-            get_preferred_language(update, context),
-            "registration_role_prompt",
-        ),
-        reply_markup=keyboard,
-    )
-
-    return ROLE
+    return await save_picker_application(update, context)
 
 
-async def get_role(
+async def save_picker_application(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Получаем выбранную роль
-    и сохраняем заявку в базе данных.
+    Сохраняет заявку сборщика в базе данных
+    сразу после получения номера телефона.
     """
 
-    role_text = update.message.text
-    role = context.user_data.get("registration_role")
+    role = "picker"
     language = get_preferred_language(update, context)
-
-    if role != "picker" or role_text != get_message(language, "registration_picker_role"):
-        await update.message.reply_text(
-            get_message(language, "registration_invalid_role")
-        )
-        return ROLE
 
     # Получаем данные пользователя Telegram
     telegram_id = update.effective_user.id
@@ -386,7 +353,7 @@ async def get_role(
 
     await update.message.reply_text(
         get_message(language, message_key),
-        reply_markup=None,
+        reply_markup=ReplyKeyboardRemove(),
     )
     context.user_data.pop("registration_role", None)
 
@@ -410,7 +377,10 @@ async def start_contact_admin(
     Начинает чат с администратором через пересылку текста.
     """
     telegram_id = update.effective_user.id
-    employee = get_employee_by_telegram_id(telegram_id)
+    employee = get_employee_by_telegram_id(
+        telegram_id,
+        context.bot_data.get("role"),
+    )
 
     if employee is None:
         await update.message.reply_text(
@@ -447,7 +417,10 @@ async def handle_contact_admin_message(
     Пересылает текст сотрудника администратору.
     """
     telegram_id = update.effective_user.id
-    employee = get_employee_by_telegram_id(telegram_id)
+    employee = get_employee_by_telegram_id(
+        telegram_id,
+        context.bot_data.get("role"),
+    )
 
     if employee is None:
         await update.message.reply_text("⛔ Сотрудник не найден.")
@@ -503,7 +476,8 @@ async def cancel_registration(
     """
 
     await update.message.reply_text(
-        "Регистрация отменена."
+        "Регистрация отменена.",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
     for key in (

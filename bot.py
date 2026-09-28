@@ -24,12 +24,10 @@ async def handle_application_error(update, context):
 from handlers.registration import (
     FIRST_LAST_NAME,
     PHONE,
-    ROLE,
     ADMIN_CONTACT,
     start_registration,
     get_name,
     get_phone,
-    get_role,
     start_contact_admin,
     handle_contact_admin_message,
     cancel_contact_admin,
@@ -68,6 +66,7 @@ application = (
     .build()
 )
 application.add_error_handler(handle_application_error)
+application.bot_data["role"] = "picker"
 
 
 # ==========================================
@@ -98,12 +97,6 @@ registration_handler = ConversationHandler(
             )
         ],
 
-        ROLE: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                get_role,
-            )
-        ],
     },
 
     fallbacks=[
