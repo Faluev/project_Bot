@@ -51,6 +51,10 @@ except ValueError:
     )
 
 
-ORDER_TIMEOUT_MINUTES = int(
-    os.getenv("ORDER_TIMEOUT_MINUTES", "15")
-)
+try:
+    ORDER_TIMEOUT_MINUTES = int(os.getenv("ORDER_TIMEOUT_MINUTES", "15"))
+except ValueError as error:
+    raise ValueError("ORDER_TIMEOUT_MINUTES должен быть целым числом") from error
+
+if ORDER_TIMEOUT_MINUTES <= 0:
+    raise ValueError("ORDER_TIMEOUT_MINUTES должен быть больше нуля")
