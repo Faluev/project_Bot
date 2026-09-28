@@ -1815,6 +1815,46 @@ def get_admin_orders_feed():
         connection.close()
 
 
+
+def get_admin_audit_log(limit=20):
+    """Возвращает последние события action_log для административного аудита."""
+    if not isinstance(limit, int) or limit <= 0:
+        limit = 20
+    limit = min(limit, 100)
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT
+                al.id,
+                al.action,
+                al.old_status,
+                al.new_status,
+                al.details,
+                al.created_at,
+                al.order_id,
+                o.order_number,
+                al.employee_id,
+                employee.first_name || ' ' || employee.last_name AS employee_name,
+                employee.role AS employee_role
+            FROM action_log al
+            LEFT JOIN orders o
+                ON o.id = al.order_id
+            LEFT JOIN employees employee
+                ON employee.id = al.employee_id
+            ORDER BY al.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
 def get_order_history(order_id):
     """
     Возвращает историю статусов заказа для админки.
