@@ -402,7 +402,8 @@ async def start_contact_admin(
 
     await update.message.reply_text(
         "💬 Напишите сообщение администратору.\n\n"
-        "После отправки оно будет переслано в админку."
+        "После отправки оно будет переслано в админку.",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
     context.user_data["admin_contact_active"] = True
@@ -443,11 +444,17 @@ async def handle_contact_admin_message(
         text=admin_message,
     )
 
+    context.user_data.pop("admin_contact_active", None)
+
     await update.message.reply_text(
-        "✅ Сообщение отправлено администратору."
+        "✅ Сообщение отправлено администратору.",
+        reply_markup=get_work_menu(
+            employee["role"],
+            employee["is_on_shift"],
+            employee["language"],
+        ),
     )
 
-    context.user_data.pop("admin_contact_active", None)
     return ConversationHandler.END
 
 
@@ -460,9 +467,25 @@ async def cancel_contact_admin(
     """
     context.user_data.pop("admin_contact_active", None)
 
-    await update.message.reply_text(
-        "❌ Диалог с администратором закрыт."
+    employee = get_employee_by_telegram_id(
+        update.effective_user.id,
+        context.bot_data.get("role"),
     )
+
+    if employee is not None:
+        await update.message.reply_text(
+            "❌ Диалог с администратором закрыт.",
+            reply_markup=get_work_menu(
+                employee["role"],
+                employee["is_on_shift"],
+                employee["language"],
+            ),
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Диалог с администратором закрыт.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
 
     return ConversationHandler.END
 
