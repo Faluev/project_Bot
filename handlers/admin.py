@@ -20,7 +20,6 @@ from database import (
     get_admin_orders_feed,
     get_order_history,
     get_admin_audit_log,
-    get_admin_audit_log,
     get_order_items,
     get_order_timeouts,
     get_employee_stats,
@@ -586,6 +585,66 @@ async def show_employees(
         )
 
 
+async def process_employee_access(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_TELEGRAM_ID:
+        await answer_callback_safely(
+            query,
+            "У вас нет доступа.",
+            show_alert=True,
+        )
+        return
+
+    await answer_callback_safely(query)
+
+    try:
+        _, employee_id_text, is_active_text = query.data.split(":", 2)
+        employee_id = int(employee_id_text)
+        is_active = int(is_active_text)
+    except (ValueError, IndexError):
+        await edit_callback_message_safely(
+            query,
+            "❌ Некорректные параметры доступа сотрудника.",
+        )
+        return
+
+    employee = set_employee_access(employee_id, is_active)
+    if employee is None:
+        await edit_callback_message_safely(
+            query,
+            "ℹ️ Сотрудник не найден или больше не одобрен.",
+        )
+        return
+
+    access_label = "✅ включён" if employee["is_active"] else "⛔ отключён"
+    shift_label = "🟢 на смене" if employee["is_on_shift"] else "🔴 не на смене"
+    action_label = "⛔ Отключить доступ" if employee["is_active"] else "✅ Включить доступ"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            action_label,
+            callback_data=f"employee_access:{employee['id']}:{0 if employee['is_active'] else 1}",
+        )],
+        [InlineKeyboardButton(
+            "📊 Статистика",
+            callback_data=f"employee_stats:{employee['id']}",
+        )],
+    ])
+
+    await edit_callback_message_safely(
+        query,
+        f"👤 {employee['first_name']} {employee['last_name']}\n"
+        f"Роль: {'👷 Сборщик' if employee['role'] == 'picker' else '🚚 Курьер'}\n"
+        f"Доступ: {access_label}\n"
+        f"Смена: {shift_label}",
+        reply_markup=keyboard,
+    )
+
+
 async def show_employee_details_stats(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -791,7 +850,6 @@ def get_admin_handlers():
             "timeouts",
             show_order_timeouts,
         ),
-        CommandHandler("audit", show_admin_audit),
         CommandHandler("audit", show_admin_audit),
         CommandHandler(
             "stats",
