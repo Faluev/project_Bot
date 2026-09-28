@@ -2,7 +2,7 @@ import logging
 
 import asyncio
 
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -111,10 +111,22 @@ async def start(
 application = (
     ApplicationBuilder()
     .token(COURIER_BOT_TOKEN)
+    .post_init(setup_courier_bot_commands)
     .build()
 )
 application.add_error_handler(handle_application_error)
 application.bot_data["role"] = "courier"
+
+
+
+async def setup_courier_bot_commands(application):
+    """Настраивает команды Telegram для курьера."""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Начать работу или регистрацию"),
+        BotCommand("cancel", "Отменить текущий диалог"),
+    ])
+
+
 
 
 courier_registration_handler = ConversationHandler(
