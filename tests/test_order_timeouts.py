@@ -1160,7 +1160,10 @@ class OrderTimeoutTests(unittest.TestCase):
             database.create_employee_application(
                 910, "picker_user", "Ivan", "Ivanov", "+992910", "picker"
             )
-            database.set_employee_application_status(1, "approved")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET application_status = 'approved' WHERE id = 1")
+            connection.commit()
+            connection.close()
 
             update = self._registration_update(910)
             context = SimpleNamespace(bot_data={"role": "picker"}, user_data={})
@@ -1179,7 +1182,10 @@ class OrderTimeoutTests(unittest.TestCase):
             database.create_employee_application(
                 911, "courier_user", "Ivan", "Ivanov", "+992911", "courier", "car"
             )
-            database.set_employee_application_status(1, "approved")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET application_status = 'approved' WHERE id = 1")
+            connection.commit()
+            connection.close()
 
             update = self._registration_update(911)
             context = SimpleNamespace(bot_data={"role": "courier"}, user_data={})
@@ -1270,7 +1276,10 @@ class OrderTimeoutTests(unittest.TestCase):
             database.create_employee_application(
                 913, "picker_user", "Ivan", "Ivanov", "+992913", "picker"
             )
-            database.set_employee_application_status(1, "rejected")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET application_status = 'rejected' WHERE id = 1")
+            connection.commit()
+            connection.close()
 
             bot = SimpleNamespace(send_message=AsyncMock())
             update = self._registration_update(913, contact_phone="+992913")
