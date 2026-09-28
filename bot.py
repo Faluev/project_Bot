@@ -44,6 +44,13 @@ from handlers.admin import (
     notify_admin_about_timeouts,
     notify_admin_about_missing_items,
     show_my_id,
+    show_applications,
+    show_employees,
+    show_orders_feed,
+    show_employee_stats,
+    show_order_timeouts,
+    show_admin_audit,
+    show_rejected_orders,
 )
 
 from handlers.orders import (
@@ -59,6 +66,7 @@ from handlers.orders import (
 )
 from handlers.shift import toggle_shift
 from handlers.language import toggle_language
+from handlers.menu import get_admin_menu, get_registration_menu
 
 
 # ==========================================
@@ -110,10 +118,8 @@ application.bot_data["role"] = "picker"
 
 registration_handler = ConversationHandler(
     entry_points=[
-        CommandHandler(
-            "start",
-            start_registration,
-        )
+        CommandHandler("start", start_registration),
+        MessageHandler(filters.Regex(r"^🚀 Начать$"), start_registration),
     ],
 
     states={
@@ -176,6 +182,60 @@ application.add_handler(
 )
 application.add_handler(
     contact_admin_handler
+)
+
+
+# ==========================================
+# ПОСТОЯННОЕ МЕНЮ АДМИНИСТРАТОРА
+# ==========================================
+
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^📋 Заявки$"),
+        show_applications,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^👥 Сотрудники$"),
+        show_employees,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^📦 Заказы$"),
+        show_orders_feed,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^📊 Статистика$"),
+        show_employee_stats,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^⏰ Таймауты$"),
+        show_order_timeouts,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^📜 Аудит$"),
+        show_admin_audit,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^⚠️ Отклонённые$"),
+        show_rejected_orders,
+    )
+)
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^🆔 Мой ID$"),
+        show_my_id,
+    )
 )
 
 
