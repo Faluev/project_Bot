@@ -22,6 +22,7 @@ from database import (
     get_order_items,
     get_order_timeouts,
     get_employee_stats,
+    get_employee_by_id,
     get_approved_employees,
     toggle_employee_access,
     set_employee_access,
@@ -500,28 +501,33 @@ async def show_employees(
         await update.message.reply_text("👥 Одобренных сотрудников пока нет.")
         return
 
+    await update.message.reply_text(f"👥 Сотрудники\n\nВсего ролей: {len(employees)}")
+
     for employee in employees:
-        role_label = "Сборщик" if employee["role"] == "picker" else "Курьер"
-        access_label = "включён" if employee["is_active"] else "отключён"
-        action_label = "Отключить" if employee["is_active"] else "Включить"
+        role_label = "👷 Сборщик" if employee["role"] == "picker" else "🚚 Курьер"
+        access_label = "✅ включён" if employee["is_active"] else "⛔ отключён"
+        shift_label = "🟢 на смене" if employee["is_on_shift"] else "🔴 не на смене"
+        action_label = "⛔ Отключить доступ" if employee["is_active"] else "✅ Включить доступ"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(
-                f"{'⛔' if employee['is_active'] else '✅'} {action_label}",
-                callback_data=(
-                    f"employee_access:{employee['id']}:"
-                    f"{0 if employee['is_active'] else 1}"
-                ),
-            )]
+                action_label,
+                callback_data=f"employee_access:{employee['id']}:{0 if employee['is_active'] else 1}",
+            )],
+            [InlineKeyboardButton(
+                "📊 Статистика",
+                callback_data=f"employee_stats:{employee['id']}",
+            )],
         ])
         await update.message.reply_text(
             f"👤 {employee['first_name']} {employee['last_name']}\n"
             f"Роль: {role_label}\n"
-            f"Доступ: {access_label}",
+            f"Доступ: {access_label}\n"
+            f"Смена: {shift_label}",
             reply_markup=keyboard,
         )
 
 
-async def process_employee_access(
+async def show_employee_details_stats(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
@@ -529,37 +535,54 @@ async def process_employee_access(
     await answer_callback_safely(query)
 
     if query.from_user.id != ADMIN_TELEGRAM_ID:
-        await answer_callback_safely(
-            query,
-            "У вас нет доступа.",
-            show_alert=True,
-        )
+        await answer_callback_safely(query, "У вас нет доступа.", show_alert=True)
         return
 
     try:
-        _, employee_id_text, desired_access_text = query.data.split(":", 2)
-        employee_id = int(employee_id_text)
-        desired_access = int(desired_access_text)
+        employee_id = int(query.data.split(":", 1)[1])
     except (IndexError, ValueError):
-        await edit_callback_message_safely(
-            query,
-            "ℹ️ Кнопка устарела. Откройте список заново командой /employees.",
-        )
+        await answer_callback_safely(query, "Некорректный ID сотрудника.", show_alert=True)
         return
 
-    employee = set_employee_access(employee_id, desired_access)
-    if employee is None:
-        await edit_callback_message_safely(
-            query,
-            "ℹ️ Сотрудник не найден или больше не одобрен.",
-        )
+    employee = get_employee_by_id(employee_id)
+    if employee is None or employee["application_status"] != "approved":
+        await edit_callback_message_safely(query, "ℹ️ Сотрудник не найден или больше не одобрен.")
         return
 
-    access_label = "включён" if employee["is_active"] else "отключён"
+    stats = get_employee_stats(employee_id)
+    entry = stats[0] if stats else None
+    role_label = "👷 Сборщик" if employee["role"] == "picker" else "🚚 Курьер"
+    access_label = "✅ включён" if employee["is_active"] else "⛔ отключён"
+    shift_label = "🟢 на смене" if employee["is_on_shift"] else "🔴 не на смене"
+
+    if entry is None:
+        stats_text = "Статистика пока пуста."
+    elif employee["role"] == "picker":
+        stats_text = f"Сборок: {entry['assembly_count']}"
+    else:
+        avg_text = f"{entry['avg_delivery_minutes']} мин." if entry["avg_delivery_minutes"] is not None else "—"
+        stats_text = f"Доставок: {entry['delivery_count']}\nСреднее время доставки: {avg_text}"
+
+    action_label = "⛔ Отключить доступ" if employee["is_active"] else "✅ Включить доступ"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            action_label,
+            callback_data=f"employee_access:{employee['id']}:{0 if employee['is_active'] else 1}",
+        )],
+        [InlineKeyboardButton(
+            "📊 Обновить статистику",
+            callback_data=f"employee_stats:{employee['id']}",
+        )],
+    ])
+
     await edit_callback_message_safely(
         query,
-        f"✅ Доступ сотрудника {employee['first_name']} "
-        f"{employee['last_name']} {access_label}."
+        f"👤 {employee['first_name']} {employee['last_name']}\n"
+        f"Роль: {role_label}\n"
+        f"Доступ: {access_label}\n"
+        f"Смена: {shift_label}\n\n"
+        f"📊 {stats_text}",
+        reply_markup=keyboard,
     )
 
 
@@ -726,6 +749,10 @@ def get_admin_handlers():
         CallbackQueryHandler(
             process_employee_access,
             pattern=r"^employee_access:\d+:[01]$",
+        ),
+        CallbackQueryHandler(
+            show_employee_details_stats,
+            pattern=r"^employee_stats:\d+$",
         ),
         CallbackQueryHandler(
             process_rejected_order,
