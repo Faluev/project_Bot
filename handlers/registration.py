@@ -144,7 +144,6 @@ async def start_registration(
     context.user_data["registration_role"] = "picker"
     await update.message.reply_text(
         get_message(language, "picker_welcome"),
-        reply_markup=get_registration_menu(),
     )
 
     return FIRST_LAST_NAME
