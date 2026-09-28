@@ -3,6 +3,7 @@ import asyncio
 from telegram.error import NetworkError, RetryAfter, TimedOut
 
 
+
 async def send_message_with_retry(
     bot,
     chat_id,
@@ -24,7 +25,7 @@ async def send_message_with_retry(
             last_error = error
             if attempt < attempts - 1:
                 await asyncio.sleep(error.retry_after)
-        except (NetworkError, TimedOut) as error:
+        except (NetworkError, TimedOut, ConnectionError) as error:
             last_error = error
             if attempt < attempts - 1:
                 await asyncio.sleep(1)
