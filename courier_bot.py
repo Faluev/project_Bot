@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from config import COURIER_BOT_TOKEN
-from database import get_employee_by_telegram_id, init_database
+from database import init_database
 
 logger = logging.getLogger(__name__)
 init_database()
@@ -24,6 +24,7 @@ async def handle_application_error(update, context):
     logger.error("Unhandled exception while processing update", exc_info=context.error)
 
 from handlers.menu import get_courier_menu
+from handlers.employee import get_current_employee
 from handlers.registration import (
     ADMIN_CONTACT,
     FIRST_LAST_NAME,
@@ -62,10 +63,7 @@ async def start(
 ):
     telegram_id = update.effective_user.id
 
-    employee = get_employee_by_telegram_id(
-        telegram_id,
-        "courier",
-    )
+    employee = get_current_employee(update, context)
 
     if employee is None:
         return await start_courier_registration(update, context)
