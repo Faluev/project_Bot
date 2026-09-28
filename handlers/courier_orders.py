@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 from config import ADMIN_TELEGRAM_ID
 from database import (
-    get_orders_waiting_for_courier,
+    get_orders_for_courier,
     get_employee_by_telegram_id,
     get_order_by_id,
     pickup_order,
@@ -196,8 +196,8 @@ async def show_courier_orders(
         )
         return
 
-    # Получаем заказы
-    orders = get_orders_waiting_for_courier()
+    # Получаем доступные заказы и уже закреплённые за этим курьером
+    orders = get_orders_for_courier(employee["id"])
 
     if not orders:
         await update.message.reply_text(
@@ -229,16 +229,34 @@ async def show_courier_orders(
             amount=order["payment_amount"],
         )
 
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    get_message(employee["language"], "pickup_button"),
-                    callback_data=(
-                        f"pickup_order:{order['id']}"
+        if order["status"] == "in_delivery":
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "deliver_button"),
+                        callback_data=f"deliver_order:{order['id']}",
                     ),
-                )
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "reject_button"),
+                        callback_data=f"reject_order:{order['id']}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "contact_button"),
+                        callback_data=f"contact_client:{order['id']}",
+                    )
+                ],
             ]
-        ]
+        else:
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "pickup_button"),
+                        callback_data=f"pickup_order:{order['id']}",
+                    )
+                ]
+            ]
 
         reply_markup = InlineKeyboardMarkup(
             keyboard
