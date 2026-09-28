@@ -20,6 +20,7 @@ from database import (
     get_admin_orders_feed,
     get_order_history,
     get_admin_audit_log,
+    get_admin_audit_log,
     get_order_items,
     get_order_timeouts,
     get_employee_stats,
@@ -790,6 +791,7 @@ def get_admin_handlers():
             "timeouts",
             show_order_timeouts,
         ),
+        CommandHandler("audit", show_admin_audit),
         CommandHandler("audit", show_admin_audit),
         CommandHandler(
             "stats",
