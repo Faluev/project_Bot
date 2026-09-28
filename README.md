@@ -12,7 +12,11 @@ Two Telegram bots for a delivery service. Both bots use one SQLite database.
 - order history and administrator feed;
 - timeout alerts;
 - employee statistics and shift reports;
-- employee shift status and administrator access control.
+- employee shift status and administrator access control;
+- role-aware employee records for one Telegram account;
+- automatic employee approval notifications with the correct work menu;
+- Telegram command menus for employees and administrator;
+- centralized order status transition rules.
 
 ## Setup
 
@@ -34,6 +38,14 @@ Copy-Item .env.example .env
 ```powershell
 python create_test_order.py
 ```
+
+Create a local SQLite backup before maintenance or deployments:
+
+```powershell
+python backup_database.py
+```
+
+Backups are stored in `backups/` and are intentionally ignored by Git.
 
 ## Run
 
@@ -65,5 +77,7 @@ The database file `delivery.db` is created locally and is intentionally ignored 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+The test suite covers order timeouts, order-flow safety, employee roles, registration keyboard cleanup, and the order status transition matrix.
 
 Never commit `.env`, bot tokens, `delivery.db`, or virtual environments.
