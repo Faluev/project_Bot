@@ -1868,6 +1868,7 @@ def get_order_history(order_id):
             """
             SELECT
                 al.id,
+                al.employee_id,
                 al.action,
                 al.old_status,
                 al.new_status,
