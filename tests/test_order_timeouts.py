@@ -1105,7 +1105,12 @@ class OrderTimeoutTests(unittest.TestCase):
             update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="👷 Регистрация сборщика")
             context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
 
-        result = asyncio.run(registration.start_registration(update, context))
+        update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="👷 Регистрация сборщика")
+        context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/admin_picker_registration.db"
+            database.init_database()
+            result = asyncio.run(registration.start_registration(update, context))
 
         self.assertEqual(result, registration.FIRST_LAST_NAME)
         self.assertEqual(context.user_data["registration_role"], "picker")
