@@ -945,6 +945,76 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
 
 
+
+    def test_admin_audit_log_returns_actor_order_action_and_details(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/audit.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO employees (
+                    telegram_id, first_name, last_name, role,
+                    application_status, is_active, is_on_shift
+                ) VALUES (901, 'Audit', 'User', 'picker', 'approved', 1, 1)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status
+                ) VALUES ('AUDIT-1', 'Client', 'assembling')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO action_log (
+                    order_id, employee_id, action,
+                    old_status, new_status, details
+                ) VALUES (1, 1, 'start_assembly',
+                          'new', 'assembling',
+                          'Сборщик начал сборку заказа')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            events = database.get_admin_audit_log(20)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["order_number"], "AUDIT-1")
+            self.assertEqual(events[0]["employee_name"], "Audit User")
+            self.assertEqual(events[0]["employee_role"], "picker")
+            self.assertEqual(events[0]["action"], "start_assembly")
+            self.assertEqual(events[0]["old_status"], "new")
+            self.assertEqual(events[0]["new_status"], "assembling")
+            self.assertEqual(events[0]["details"], "Сборщик начал сборку заказа")
+
+    def test_admin_audit_log_returns_latest_events_first_and_limits_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/audit_limit.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.executemany(
+                """
+                INSERT INTO action_log (
+                    action, details
+                ) VALUES (?, ?)
+                """,
+                [(f"action_{index}", f"details_{index}") for index in range(3)],
+            )
+            connection.commit()
+            connection.close()
+
+            events = database.get_admin_audit_log(2)
+
+            self.assertEqual(len(events), 2)
+            self.assertEqual(events[0]["action"], "action_2")
+            self.assertEqual(events[1]["action"], "action_1")
+
+
     def test_order_status_transition_matrix(self):
         valid = [
             ("new", "assembling"),
