@@ -1390,6 +1390,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.update_application_status(2, "approved")
 
             connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id IN (1, 2)")
             connection.execute(
                 """
                 INSERT INTO orders (
@@ -1420,6 +1421,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.update_application_status(1, "approved")
 
             connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
             connection.execute(
                 """
                 INSERT INTO orders (
@@ -1561,6 +1563,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.update_application_status(2, "approved")
 
             connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id IN (1, 2)")
             connection.execute(
                 """
                 INSERT INTO orders (
