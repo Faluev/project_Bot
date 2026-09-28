@@ -1684,5 +1684,42 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(result["reason"], "invalid_item_name")
             self.assertEqual(database.get_order_by_id(1)["status"], "assembling")
 
+
+    def test_employee_application_requires_required_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/invalid_employee_fields.db"
+            database.init_database()
+
+            self.assertEqual(
+                database.create_employee_application(
+                    4101, "picker1", "", "Иванов", "+992", "picker"
+                ),
+                "invalid_first_name",
+            )
+            self.assertEqual(
+                database.create_employee_application(
+                    4102, "picker2", "Иван", "", "+992", "picker"
+                ),
+                "invalid_last_name",
+            )
+            self.assertEqual(
+                database.create_employee_application(
+                    4103, "picker3", "Иван", "Иванов", "   ", "picker"
+                ),
+                "invalid_phone",
+            )
+            self.assertEqual(
+                database.create_employee_application(
+                    4104, "courier1", "Иван", "Иванов", "+992", "courier"
+                ),
+                "invalid_transport",
+            )
+            self.assertEqual(
+                database.create_employee_application(
+                    4105, "picker4", "Иван", "Иванов", "+992", "picker", "car"
+                ),
+                "invalid_transport",
+            )
+
 if __name__ == "__main__":
     unittest.main()
