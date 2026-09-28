@@ -16,6 +16,10 @@ from telegram.ext import (
 from config import COURIER_BOT_TOKEN
 from database import init_database
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 logger = logging.getLogger(__name__)
 init_database()
 
