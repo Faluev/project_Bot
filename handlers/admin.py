@@ -68,7 +68,7 @@ async def notify_employee_application_result(context, employee, text):
 
     try:
         reply_markup = None
-        if text == get_message(employee["language"], "application_approved_notice"):
+        if employee["application_status"] == "approved":
             reply_markup = get_work_menu(
                 employee["role"],
                 employee["is_on_shift"],
