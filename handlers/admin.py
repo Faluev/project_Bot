@@ -22,6 +22,7 @@ from database import (
     get_order_items,
     get_order_timeouts,
     get_employee_stats,
+    get_admin_stats_summary,
     get_employee_by_id,
     get_approved_employees,
     toggle_employee_access,
@@ -449,43 +450,53 @@ async def show_employee_stats(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """
-    Показывает статистику по сотрудникам.
-    """
     if not is_admin(update):
         await update.message.reply_text("⛔ У вас нет доступа к этому разделу.")
         return
 
+    summary = get_admin_stats_summary()
     stats = get_employee_stats()
 
-    if not stats:
-        await update.message.reply_text("📊 Статистика сотрудников пока пуста.")
-        return
+    avg_text = (
+        f"{summary['avg_delivery_minutes']} мин."
+        if summary["avg_delivery_minutes"] is not None
+        else "—"
+    )
 
-    lines = ["📊 Статистика сотрудников\n"]
+    lines = [
+        "📊 Общая статистика",
+        "",
+        f"📦 Всего заказов: {summary['total_orders']}",
+        f"✅ Доставлено: {summary['delivered_orders']}",
+        f"❌ Отклонено: {summary['rejected_orders']}",
+        f"⏱ Среднее время доставки: {avg_text}",
+        "",
+        f"👥 Активных сотрудников: {summary['active_employees']}",
+        f"🟢 На смене: {summary['on_shift_employees']}",
+    ]
 
-    for entry in stats:
-        role_label = "👷 Сборщик" if entry["role"] == "picker" else "🚚 Курьер"
-        if entry["role"] == "picker":
-            line = (
-                f"{role_label} — {entry['name']}\n"
-                f"Сборок: {entry['assembly_count']}"
-            )
-        else:
-            avg_text = (
-                f"{entry['avg_delivery_minutes']} мин."
-                if entry["avg_delivery_minutes"] is not None
-                else "—"
-            )
-            line = (
-                f"{role_label} — {entry['name']}\n"
-                f"Доставок: {entry['delivery_count']}\n"
-                f"Среднее время: {avg_text}"
-            )
+    if stats:
+        lines.extend(["", "👤 По сотрудникам:"])
+        for entry in stats:
+            role_label = "👷 Сборщик" if entry["role"] == "picker" else "🚚 Курьер"
+            if entry["role"] == "picker":
+                lines.append(
+                    f"{role_label} — {entry['name']}: "
+                    f"{entry['assembly_count']} сборок"
+                )
+            else:
+                employee_avg = (
+                    f"{entry['avg_delivery_minutes']} мин."
+                    if entry["avg_delivery_minutes"] is not None
+                    else "—"
+                )
+                lines.append(
+                    f"{role_label} — {entry['name']}: "
+                    f"{entry['delivery_count']} доставок, "
+                    f"среднее {employee_avg}"
+                )
 
-        lines.append(line)
-
-    await update.message.reply_text("\n\n".join(lines))
+    await update.message.reply_text("\n".join(lines))
 
 
 async def show_employees(
