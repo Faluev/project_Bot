@@ -1,4 +1,5 @@
 from database import get_employee_by_telegram_id
+from handlers.menu import get_work_menu_expanded
 
 
 SUPPORTED_EMPLOYEE_ROLES = {"picker", "courier"}
@@ -35,3 +36,20 @@ def get_current_employee(update, context):
         return None
 
     return get_employee_by_telegram_id(user.id, role)
+
+
+async def show_work_menu(update, context):
+    """Раскрывает полное рабочее меню сотрудника."""
+    employee = get_current_employee(update, context)
+    if employee is None:
+        await update.message.reply_text("⛔ Сотрудник не найден.")
+        return
+
+    await update.message.reply_text(
+        "📋 Выберите действие:",
+        reply_markup=get_work_menu_expanded(
+            employee["role"],
+            employee["is_on_shift"],
+            employee["language"],
+        ),
+    )
