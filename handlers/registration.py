@@ -421,6 +421,15 @@ async def save_picker_application(
         get_message(language, message_key),
         reply_markup=ReplyKeyboardRemove(),
     )
+
+    if result in ("created", "recreated"):
+        employee = get_employee_by_telegram_id(
+            telegram_id,
+            "picker",
+        )
+        if employee is not None:
+            await notify_admin_about_application(context, employee)
+
     context.user_data.pop("registration_role", None)
 
     logger.info(
