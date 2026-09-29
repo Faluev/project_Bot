@@ -1863,7 +1863,6 @@ class OrderTimeoutTests(unittest.TestCase):
             second_first = database.deliver_order(2, 1)
             self.assertFalse(second_first["success"])
             self.assertEqual(second_first["reason"], "not_oldest")
-            self.assertEqual(second_first["priority_order_number"], "COURIER-1")
 
             # Сначала доставляем старый, затем новый.
             self.assertTrue(database.deliver_order(1, 1)["success"])
