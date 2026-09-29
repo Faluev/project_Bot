@@ -37,7 +37,7 @@ from database import (
 from config import ADMIN_TELEGRAM_ID, ORDER_TIMEOUT_MINUTES
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
-from handlers.menu import get_work_menu
+from handlers.menu import get_work_menu_expanded
 
 
 async def answer_callback_safely(query, text=None, show_alert=False):
