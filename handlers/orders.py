@@ -9,6 +9,7 @@ from handlers.employee import get_current_employee
 
 from database import (
     get_new_orders,
+    get_orders_for_picker,
     get_order_items,
     get_order_by_id,
     start_order_assembly,
@@ -83,8 +84,9 @@ async def show_current_orders(
         await update.message.reply_text(get_message(language, "picker_only"))
         return
 
-    # Получаем новые заказы
-    orders = get_new_orders()
+    # Показываем только один актуальный заказ:
+    # текущий заказ сборщика либо самый старый новый заказ из очереди.
+    orders = get_orders_for_picker(employee["id"])
 
     if not orders:
         await update.message.reply_text(get_message(language, "no_picker_orders"))
@@ -264,6 +266,10 @@ async def start_assembly(
             except Exception:
                 pass
         return
+
+    # После того как один сборщик взял заказ, сразу обновляем очередь
+    # остальных сборщиков: им отправляется следующий старый заказ.
+    await notify_pickers_about_new_orders(context)
 
     # Заказ успешно принят
     order_number = result["order_number"]
