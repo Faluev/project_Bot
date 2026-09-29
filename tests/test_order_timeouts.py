@@ -2595,5 +2595,167 @@ class OrderTimeoutTests(unittest.TestCase):
                 [{"employee_id": 2, "telegram_id": 7302, "message_id": 202}],
             )
 
+    def test_timeout_releases_stuck_delivery_back_to_courier_queue(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/stuck_delivery.db"
+            database.init_database()
+
+            database.create_employee_application(
+                8101, "courier_a", "Али", "Сафаров", "+9928101", "courier", "bike"
+            )
+            database.create_employee_application(
+                8102, "courier_b", "Бахром", "Нуров", "+9928102", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            database.update_application_status(2, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1")
+            stale_time = "2026-09-29 09:00:00"
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id, created_at, updated_at
+                ) VALUES (?, ?, 'in_delivery', ?, ?, ?)
+                """,
+                ("STUCK-DELIVERY-1", "Клиент", 1, stale_time, stale_time),
+            )
+            connection.commit()
+            connection.close()
+
+            events = database.process_order_timeouts(15)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["action"], "timeout_requeue")
+            self.assertEqual(events[0]["status"], "awaiting_courier")
+
+            order = database.get_order_by_id(1)
+            self.assertEqual(order["status"], "awaiting_courier")
+            self.assertIsNone(order["courier_id"])
+
+            history = database.get_order_history(1)
+            self.assertTrue(any(
+                event["action"] == "timeout_requeue"
+                and event["old_status"] == "in_delivery"
+                and event["new_status"] == "awaiting_courier"
+                for event in history
+            ))
+
+            available = database.get_unnotified_courier_orders(2)
+            self.assertEqual([row["id"] for row in available], [1])
+
+    def test_courier_notification_can_repeat_after_timeout_requeue(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_requeue_notification.db"
+            database.init_database()
+
+            database.create_employee_application(
+                8201, "courier", "Али", "Сафаров", "+9928201", "courier", "bike"
+            )
+            database.update_application_status(1, "approved")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES ('REQUEUE-NOTIFY-1', 'Клиент', 'awaiting_courier',
+                          '2026-09-29 10:00:00', '2026-09-29 10:00:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(database.log_courier_order_notification(1, 1, 100))
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO action_log (
+                    order_id, employee_id, action, old_status, new_status, details
+                ) VALUES (1, 1, 'timeout_requeue',
+                          'in_delivery', 'awaiting_courier',
+                          'Тестовое повторное освобождение')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            available = database.get_unnotified_courier_orders(1)
+            self.assertEqual([row["id"] for row in available], [1])
+
+    def test_rejected_order_has_explicit_delivery_retry_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/rejected_retry.db"
+            database.init_database()
+
+            database.create_employee_application(
+                8301, "courier", "Али", "Сафаров", "+9928301", "courier", "bike"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, courier_id
+                ) VALUES ('RETRY-DELIVERY-1', 'Клиент', 'rejected', 1)
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertEqual(
+                database.retry_rejected_order(1)["reason"],
+                "resolution_required",
+            )
+
+            resolved = database.resolve_rejected_order(
+                1,
+                "return_to_stock",
+                admin_telegram_id=999999999,
+            )
+            self.assertTrue(resolved["success"])
+
+            retried = database.retry_rejected_order(
+                1,
+                admin_telegram_id=999999999,
+            )
+            self.assertTrue(retried["success"])
+
+            order = database.get_order_by_id(1)
+            self.assertEqual(order["status"], "awaiting_courier")
+            self.assertIsNone(order["courier_id"])
+
+            history = database.get_order_history(1)
+            self.assertTrue(any(
+                event["action"] == "retry_delivery"
+                and event["old_status"] == "rejected"
+                and event["new_status"] == "awaiting_courier"
+                for event in history
+            ))
+
+    def test_rejected_order_written_off_cannot_be_retried(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/rejected_writeoff_retry.db"
+            database.init_database()
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status
+                ) VALUES ('NO-RETRY-WRITEOFF', 'Клиент', 'rejected')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            resolved = database.resolve_rejected_order(1, "write_off")
+            self.assertTrue(resolved["success"])
+
+            result = database.retry_rejected_order(1)
+            self.assertEqual(result["reason"], "written_off")
+
+
 if __name__ == "__main__":
     unittest.main()
