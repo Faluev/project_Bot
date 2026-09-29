@@ -235,11 +235,15 @@ async def process_application(
             )
             return
 
+        role_label = {
+            "picker": "👷 Сборщик",
+            "courier": "🚚 Курьер",
+        }.get(employee["role"], employee["role"])
+
         await query.edit_message_text(
             "✅ Заявка одобрена.\n\n"
-            f"Сотрудник: "
-            f"{employee['first_name']} "
-            f"{employee['last_name']}"
+            f"Сотрудник: {employee['first_name']} {employee['last_name']}\n"
+            f"🎯 Роль: {role_label}"
         )
 
         # Сообщаем сотруднику
@@ -268,11 +272,15 @@ async def process_application(
             )
             return
 
+        role_label = {
+            "picker": "👷 Сборщик",
+            "courier": "🚚 Курьер",
+        }.get(employee["role"], employee["role"])
+
         await query.edit_message_text(
             "❌ Заявка отклонена.\n\n"
-            f"Сотрудник: "
-            f"{employee['first_name']} "
-            f"{employee['last_name']}"
+            f"Сотрудник: {employee['first_name']} {employee['last_name']}\n"
+            f"🎯 Роль: {role_label}"
         )
 
         # Сообщаем сотруднику
