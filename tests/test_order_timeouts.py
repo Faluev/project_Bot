@@ -946,7 +946,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.init_database()
             update = self._registration_update(801, contact_phone="+992900000002")
             context = SimpleNamespace(
-                user_data={"full_name": "Ivan Ivanov", "registration_role": "courier"},
+                user_data={"full_name": "Мухаммад Сафаров", "registration_role": "courier"},
                 bot_data={"role": "courier"},
             )
 
