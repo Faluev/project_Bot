@@ -31,17 +31,9 @@ from handlers.menu import get_courier_menu
 from handlers.employee import get_current_employee, show_work_menu
 from handlers.registration import (
     ADMIN_CONTACT,
-    FIRST_LAST_NAME,
-    PHONE,
-    COURIER_TRANSPORT,
     start_contact_admin,
     handle_contact_admin_message,
     cancel_contact_admin,
-    start_courier_registration,
-    get_name,
-    get_phone,
-    get_courier_transport,
-    cancel_registration,
 )
 from handlers.courier_orders import (
     show_courier_orders,
@@ -71,10 +63,11 @@ async def start(
     employee = get_current_employee(update, context)
 
     if employee is None:
-        return await start_courier_registration(update, context)
-
-    if employee["application_status"] == "rejected":
-        return await start_courier_registration(update, context)
+        await update.message.reply_text(
+            "⛔ Вы не зарегистрированы как курьер.\n\n"
+            "Обратитесь к администратору для подключения к работе."
+        )
+        return ConversationHandler.END
 
     if employee["application_status"] == "pending":
         await update.message.reply_text(
@@ -85,10 +78,10 @@ async def start(
 
     if employee["application_status"] == "rejected":
         await update.message.reply_text(
-            "❌ Ваша заявка на регистрацию "
-            "отклонена."
+            "❌ Доступ к работе курьером отклонён.\n\n"
+            "Обратитесь к администратору, если нужно уточнить причину."
         )
-        return
+        return ConversationHandler.END
 
     if employee["is_active"] != 1:
         await update.message.reply_text(
@@ -116,7 +109,7 @@ async def setup_courier_bot_commands(application):
     # /cancel остаётся рабочей fallback-командой во время диалога,
     # но не показывается постоянно в меню Telegram.
     await application.bot.set_my_commands([
-        BotCommand("start", "Начать работу или регистрацию"),
+        BotCommand("start", "Начать работу"),
     ])
 
 
@@ -131,33 +124,6 @@ application = (
 application.add_error_handler(handle_application_error)
 application.bot_data["role"] = "courier"
 
-
-
-courier_registration_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        FIRST_LAST_NAME: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, get_name),
-        ],
-        PHONE: [
-            MessageHandler(
-                filters.CONTACT | (filters.TEXT & ~filters.COMMAND),
-                get_phone,
-            ),
-        ],
-        COURIER_TRANSPORT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, get_courier_transport),
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", cancel_registration)],
-)
-
-application.add_handler(
-    MessageHandler(
-        filters.TEXT & filters.Regex(r"^☰ Меню$"),
-        show_work_menu,
-    )
-)
 
 
 application.add_handler(courier_registration_handler)
