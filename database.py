@@ -30,7 +30,7 @@ ORDER_STATUS_TRANSITIONS = {
     "awaiting_courier": {"in_delivery"},
     "in_delivery": {"delivered", "rejected"},
     "delivered": set(),
-    "rejected": set(),
+    "rejected": {"awaiting_courier"},
 }
 
 
@@ -1419,7 +1419,7 @@ def get_order_timeouts(timeout_minutes=15):
                     ELSE o.status
                 END AS status_label
             FROM orders o
-            WHERE o.status IN ('new', 'assembling', 'awaiting_courier')
+            WHERE o.status IN ('new', 'assembling', 'awaiting_courier', 'in_delivery')
               AND o.updated_at <= datetime('now', '-' || ? || ' minutes')
               AND NOT EXISTS (
                   SELECT 1
@@ -1444,6 +1444,9 @@ def process_order_timeouts(timeout_minutes=15):
     Правила:
     - stale 'assembling' -> принудительный release обратно в 'new',
       picker_id очищается; заказ снова доступен очереди;
+    - stale 'in_delivery' -> принудительный release обратно в
+      'awaiting_courier', courier_id очищается; заказ снова доступен
+      очереди курьеров;
     - stale 'new' / 'awaiting_courier' -> статус не меняется,
       выполняется только эскалация администратору;
     - каждый запуск возвращает только новые события таймаута для уведомления.
@@ -1467,9 +1470,10 @@ def process_order_timeouts(timeout_minutes=15):
                 o.client_name,
                 o.delivery_address,
                 o.status,
-                o.picker_id
+                o.picker_id,
+                o.courier_id
             FROM orders o
-            WHERE o.status IN ('new', 'assembling', 'awaiting_courier')
+            WHERE o.status IN ('new', 'assembling', 'awaiting_courier', 'in_delivery')
               AND o.updated_at <= datetime('now', '-' || ? || ' minutes')
               AND NOT EXISTS (
                   SELECT 1
@@ -1486,7 +1490,52 @@ def process_order_timeouts(timeout_minutes=15):
         events = []
 
         for order in orders:
-            if order["status"] == "assembling":
+            if order["status"] == "in_delivery":
+                cursor.execute(
+                    """
+                    UPDATE orders
+                    SET
+                        status = 'awaiting_courier',
+                        courier_id = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                      AND status = 'in_delivery'
+                    """,
+                    (order["id"],),
+                )
+                if cursor.rowcount != 1:
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO action_log (
+                        order_id, employee_id, action,
+                        old_status, new_status, details
+                    )
+                    VALUES (?, ?, 'timeout_requeue', 'in_delivery', 'awaiting_courier', ?)
+                    """,
+                    (
+                        order["id"],
+                        order["courier_id"],
+                        (
+                            "Принудительное освобождение: доставка превысила "
+                            f"таймаут {timeout_minutes} минут. "
+                            "Заказ возвращён в очередь курьеров."
+                        ),
+                    ),
+                )
+                events.append(
+                    {
+                        "order_id": order["id"],
+                        "order_number": order["order_number"],
+                        "client_name": order["client_name"],
+                        "delivery_address": order["delivery_address"],
+                        "status": "awaiting_courier",
+                        "action": "timeout_requeue",
+                        "previous_employee_id": order["courier_id"],
+                    }
+                )
+            elif order["status"] == "assembling":
                 cursor.execute(
                     """
                     UPDATE orders
