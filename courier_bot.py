@@ -275,9 +275,11 @@ rejection_reason_handler = ConversationHandler(
 )
 application.add_handler(rejection_reason_handler)
 
+# Основные уведомления отправляются сразу после сборки/взятия заказа.
+# Периодическая задача остаётся только как страховка после перезапуска.
 application.job_queue.run_repeating(
     notify_couriers_about_waiting_orders,
-    interval=30,
+    interval=60,
     first=10,
 )
 
