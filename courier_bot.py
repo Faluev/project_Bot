@@ -13,11 +13,11 @@ from telegram.ext import (
     filters,
 )
 
-from config import COURIER_BOT_TOKEN
+from config import COURIER_BOT_TOKEN, LOG_LEVEL
 from database import init_database
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
