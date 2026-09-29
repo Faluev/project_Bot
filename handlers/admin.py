@@ -22,6 +22,7 @@ from database import (
     get_admin_audit_log,
     get_order_items,
     get_order_timeouts,
+    process_order_timeouts,
     get_employee_stats,
     get_admin_stats_summary,
     get_employee_by_id,
@@ -789,15 +790,30 @@ async def process_rejected_order(
 
 async def notify_admin_about_timeouts(context: ContextTypes.DEFAULT_TYPE):
     """
-    Автоматически шлёт уведомления админу,
-    если заказ слишком долго не берут в работу.
+    Обрабатывает таймауты и сообщает администратору.
+
+    Таймаут 'assembling' принудительно освобождает заказ и возвращает
+    его в FIFO-очередь. Таймауты 'new' и 'awaiting_courier' не меняют
+    статус, а только эскалируются администратору.
     """
-    orders = get_order_timeouts(ORDER_TIMEOUT_MINUTES)
+    requeued = process_order_timeouts(ORDER_TIMEOUT_MINUTES)
 
-    if not orders:
-        return
+    for order in requeued:
+        if order["action"] == "timeout_requeue":
+            text = (
+                "⏰ Заказ автоматически возвращён в очередь\n\n"
+                f"Заказ № {order['order_number']}\n"
+                "Статус: Сборка → Новый\n"
+                f"Сборка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
+                "Заказ снова доступен сборщикам по строгому FIFO."
+            )
+            await send_message_with_retry(
+                context.bot,
+                chat_id=ADMIN_TELEGRAM_ID,
+                text=text,
+            )
+            continue
 
-    for order in orders:
         status_label = get_status_label(order["status"])
         text = (
             "⏰ Уведомление о таймауте\n\n"

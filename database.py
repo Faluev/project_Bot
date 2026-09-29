@@ -1437,6 +1437,120 @@ def get_order_timeouts(timeout_minutes=15):
         connection.close()
 
 
+def process_order_timeouts(timeout_minutes=15):
+    """
+    Выполняет операционную часть таймаута.
+
+    Правила:
+    - stale 'assembling' -> принудительный release обратно в 'new',
+      picker_id очищается; заказ снова доступен очереди;
+    - stale 'new' / 'awaiting_courier' -> статус не меняется,
+      выполняется только эскалация администратору;
+    - каждый запуск возвращает только новые события таймаута для уведомления.
+
+    Возврат: список словарей с order_id, order_number, status и action.
+    """
+    if not isinstance(timeout_minutes, int) or timeout_minutes <= 0:
+        return []
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+
+        cursor.execute(
+            """
+            SELECT
+                o.id,
+                o.order_number,
+                o.client_name,
+                o.delivery_address,
+                o.status,
+                o.picker_id
+            FROM orders o
+            WHERE o.status IN ('new', 'assembling', 'awaiting_courier')
+              AND o.updated_at <= datetime('now', '-' || ? || ' minutes')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.action IN ('timeout_alert', 'timeout_requeue')
+                    AND al.created_at >= o.updated_at
+              )
+            ORDER BY o.updated_at ASC
+            """,
+            (str(timeout_minutes),),
+        )
+        orders = cursor.fetchall()
+        events = []
+
+        for order in orders:
+            if order["status"] == "assembling":
+                cursor.execute(
+                    """
+                    UPDATE orders
+                    SET
+                        status = 'new',
+                        picker_id = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                      AND status = 'assembling'
+                    """,
+                    (order["id"],),
+                )
+                if cursor.rowcount != 1:
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO action_log (
+                        order_id, employee_id, action,
+                        old_status, new_status, details
+                    )
+                    VALUES (?, ?, 'timeout_requeue', 'assembling', 'new', ?)
+                    """,
+                    (
+                        order["id"],
+                        order["picker_id"],
+                        (
+                            "Принудительное освобождение: сборка превысила "
+                            f"таймаут {timeout_minutes} минут. "
+                            "Заказ возвращён в очередь."
+                        ),
+                    ),
+                )
+                events.append(
+                    {
+                        "order_id": order["id"],
+                        "order_number": order["order_number"],
+                        "client_name": order["client_name"],
+                        "delivery_address": order["delivery_address"],
+                        "status": "new",
+                        "action": "timeout_requeue",
+                    }
+                )
+            else:
+                events.append(
+                    {
+                        "order_id": order["id"],
+                        "order_number": order["order_number"],
+                        "client_name": order["client_name"],
+                        "delivery_address": order["delivery_address"],
+                        "status": order["status"],
+                        "action": "timeout_alert",
+                    }
+                )
+
+        connection.commit()
+        return events
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def get_employee_stats(employee_id=None):
     """
     Возвращает краткую статистику по сотрудникам:
@@ -1643,20 +1757,62 @@ def get_employee_shift_report(employee_id, report_date=None):
 
 def toggle_employee_shift(employee_id):
     """
-    Переключает статус смены сотрудника и возвращает новое значение.
+    Переключает статус смены сотрудника.
+
+    Завершить смену можно только без активного заказа:
+    - picker не может уйти со смены с заказом в 'assembling';
+    - courier не может уйти со смены с заказом в 'in_delivery'.
+
+    Это исключает ситуацию, когда заказ остаётся назначенным сотруднику,
+    который больше не может выполнять рабочие действия.
     """
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
         connection.execute("BEGIN IMMEDIATE")
+
+        cursor.execute(
+            """
+            SELECT id, role, is_on_shift
+            FROM employees
+            WHERE id = ?
+              AND application_status = 'approved'
+              AND is_active = 1
+            """,
+            (employee_id,),
+        )
+        employee = cursor.fetchone()
+
+        if employee is None:
+            connection.rollback()
+            return None
+
+        if employee["is_on_shift"] == 1:
+            active_status = (
+                "assembling"
+                if employee["role"] == "picker"
+                else "in_delivery"
+            )
+            cursor.execute(
+                """
+                SELECT 1
+                FROM orders
+                WHERE status = ?
+                  AND (picker_id = ? OR courier_id = ?)
+                LIMIT 1
+                """,
+                (active_status, employee_id, employee_id),
+            )
+            if cursor.fetchone() is not None:
+                connection.rollback()
+                return None
+
         cursor.execute(
             """
             UPDATE employees
             SET is_on_shift = CASE is_on_shift WHEN 1 THEN 0 ELSE 1 END
             WHERE id = ?
-              AND application_status = 'approved'
-              AND is_active = 1
             """,
             (employee_id,),
         )

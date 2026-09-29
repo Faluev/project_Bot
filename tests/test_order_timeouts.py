@@ -325,6 +325,169 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(employee["is_on_shift"], 0)
             self.assertEqual(employee["is_active"], 1)
 
+    def test_picker_cannot_end_shift_with_active_assembly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_active_shift.db"
+            database.init_database()
+
+            database.create_employee_application(
+                3010, "picker", "Пикер", "Тест", "+992", "picker"
+            )
+            picker = database.get_employee_by_telegram_id(3010, "picker")
+            database.update_application_status(picker["id"], "approved")
+            self.assertTrue(database.toggle_employee_shift(picker["id"]))
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO orders (
+                        order_number, client_name, status, picker_id
+                    ) VALUES ('SHIFT-PICKER-1', 'Клиент', 'assembling', ?)
+                    """,
+                    (picker["id"],),
+                )
+                connection.commit()
+
+            self.assertIsNone(database.toggle_employee_shift(picker["id"]))
+            self.assertEqual(
+                database.get_employee_by_id(picker["id"])["is_on_shift"],
+                1,
+            )
+
+    def test_courier_cannot_end_shift_with_active_delivery(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_active_shift.db"
+            database.init_database()
+
+            database.create_employee_application(
+                3020, "courier", "Курьер", "Тест", "+992", "courier", "car"
+            )
+            courier = database.get_employee_by_telegram_id(3020, "courier")
+            database.update_application_status(courier["id"], "approved")
+            self.assertTrue(database.toggle_employee_shift(courier["id"]))
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO orders (
+                        order_number, client_name, status, courier_id
+                    ) VALUES ('SHIFT-COURIER-1', 'Клиент', 'in_delivery', ?)
+                    """,
+                    (courier["id"],),
+                )
+                connection.commit()
+
+            self.assertIsNone(database.toggle_employee_shift(courier["id"]))
+            self.assertEqual(
+                database.get_employee_by_id(courier["id"])["is_on_shift"],
+                1,
+            )
+
+    def test_timeout_releases_stale_assembly_back_to_fifo_queue(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/timeout_requeue.db"
+            database.init_database()
+
+            database.create_employee_application(
+                3030, "picker", "Пикер", "Тест", "+992", "picker"
+            )
+            picker = database.get_employee_by_telegram_id(3030, "picker")
+            database.update_application_status(picker["id"], "approved")
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO orders (
+                        order_number, client_name, status, picker_id,
+                        created_at, updated_at
+                    ) VALUES (
+                        'TIMEOUT-REQUEUE-1', 'Клиент', 'assembling', ?,
+                        datetime('now', '-30 minutes'),
+                        datetime('now', '-30 minutes')
+                    )
+                    """,
+                    (picker["id"],),
+                )
+                connection.commit()
+
+            events = database.process_order_timeouts(15)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["action"], "timeout_requeue")
+            order = database.get_order_by_id(1)
+            self.assertEqual(order["status"], "new")
+            self.assertIsNone(order["picker_id"])
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                action = connection.execute(
+                    """
+                    SELECT action, old_status, new_status
+                    FROM action_log
+                    WHERE order_id = 1
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            self.assertEqual(action, ("timeout_requeue", "assembling", "new"))
+
+    def test_timeout_escalates_new_order_without_changing_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/timeout_escalation.db"
+            database.init_database()
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO orders (
+                        order_number, client_name, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        'TIMEOUT-ESCALATION-1', 'Клиент', 'new',
+                        datetime('now', '-30 minutes'),
+                        datetime('now', '-30 minutes')
+                    )
+                    """
+                )
+                connection.commit()
+
+            events = database.process_order_timeouts(15)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["action"], "timeout_alert")
+            self.assertEqual(database.get_order_by_id(1)["status"], "new")
+
+            database.log_order_timeout_alert(1, "new", 15)
+            self.assertEqual(database.get_order_timeouts(15), [])
+
+    def test_timeout_escalates_waiting_courier_without_reassignment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/timeout_waiting_courier.db"
+            database.init_database()
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO orders (
+                        order_number, client_name, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        'TIMEOUT-WAITING-1', 'Клиент', 'awaiting_courier',
+                        datetime('now', '-30 minutes'),
+                        datetime('now', '-30 minutes')
+                    )
+                    """
+                )
+                connection.commit()
+
+            events = database.process_order_timeouts(15)
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["action"], "timeout_alert")
+            self.assertEqual(
+                database.get_order_by_id(1)["status"],
+                "awaiting_courier",
+            )
+
     def test_employee_access_isolated_between_roles(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/two_role_access.db"
