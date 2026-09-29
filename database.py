@@ -763,21 +763,23 @@ def get_unnotified_new_orders(employee_id):
         connection.close()
 
 
-def log_new_order_notification(order_id, employee_id):
+def log_new_order_notification(order_id, employee_id, message_id=None):
     """Фиксирует отправку нового заказа конкретному сборщику."""
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
         connection.execute("BEGIN IMMEDIATE")
+        details = "Новый заказ отправлен сборщику"
+        if message_id is not None:
+            details += f";message_id:{message_id}"
         cursor.execute(
             """
             INSERT INTO action_log (
                 order_id, employee_id, action,
                 old_status, new_status, details
             )
-            SELECT ?, ?, 'new_order_notification', 'new', 'new',
-                   'Новый заказ отправлен сборщику'
+            SELECT ?, ?, 'new_order_notification', 'new', 'new', ?
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM action_log
@@ -786,13 +788,52 @@ def log_new_order_notification(order_id, employee_id):
                   AND action = 'new_order_notification'
             )
             """,
-            (order_id, employee_id, order_id, employee_id),
+            (order_id, employee_id, details, order_id, employee_id),
         )
         connection.commit()
         return cursor.rowcount == 1
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
+
+
+def get_picker_order_notification_messages(order_id, exclude_employee_id=None):
+    """Возвращает Telegram message_id уведомлений этого заказа у других сборщиков."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        query = """
+            SELECT
+                al.employee_id,
+                e.telegram_id,
+                al.details
+            FROM action_log al
+            JOIN employees e ON e.id = al.employee_id
+            WHERE al.order_id = ?
+              AND al.action = 'new_order_notification'
+              AND al.details LIKE '%;message_id:%'
+        """
+        params = [order_id]
+        if exclude_employee_id is not None:
+            query += " AND al.employee_id != ?"
+            params.append(exclude_employee_id)
+
+        cursor.execute(query, params)
+
+        result = []
+        for row in cursor.fetchall():
+            try:
+                message_id = int(row["details"].split(";message_id:", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            result.append({
+                "employee_id": row["employee_id"],
+                "telegram_id": row["telegram_id"],
+                "message_id": message_id,
+            })
+        return result
     finally:
         connection.close()
 
