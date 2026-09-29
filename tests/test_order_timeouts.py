@@ -2246,10 +2246,10 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertFalse(duplicate["success"])
             self.assertEqual(duplicate["reason"], "already_resolved")
 
-    def test_terminal_order_status_has_no_outgoing_transition(self):
+    def test_terminal_and_retryable_order_status_transitions(self):
         self.assertFalse(database.is_valid_order_transition("delivered", "new"))
         self.assertFalse(database.is_valid_order_transition("delivered", "assembling"))
-        self.assertFalse(database.is_valid_order_transition("rejected", "awaiting_courier"))
+        self.assertTrue(database.is_valid_order_transition("rejected", "awaiting_courier"))
 
 
     def test_admin_mode_menu_has_separate_admin_and_picker_buttons(self):
