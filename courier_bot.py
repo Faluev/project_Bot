@@ -31,9 +31,17 @@ from handlers.menu import get_courier_menu
 from handlers.employee import get_current_employee, show_work_menu
 from handlers.registration import (
     ADMIN_CONTACT,
+    FIRST_LAST_NAME,
+    PHONE,
+    COURIER_TRANSPORT,
     start_contact_admin,
     handle_contact_admin_message,
     cancel_contact_admin,
+    start_courier_registration,
+    get_name,
+    get_phone,
+    get_courier_transport,
+    cancel_registration,
 )
 from handlers.courier_orders import (
     show_courier_orders,
@@ -63,11 +71,7 @@ async def start(
     employee = get_current_employee(update, context)
 
     if employee is None:
-        await update.message.reply_text(
-            "⛔ Вы не зарегистрированы как курьер.\n\n"
-            "Обратитесь к администратору для подключения к работе."
-        )
-        return ConversationHandler.END
+        return await start_courier_registration(update, context)
 
     if employee["application_status"] == "pending":
         await update.message.reply_text(
@@ -139,6 +143,28 @@ application.add_handler(
     )
 )
 
+
+courier_registration_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        FIRST_LAST_NAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, get_name),
+        ],
+        PHONE: [
+            MessageHandler(
+                filters.CONTACT | (filters.TEXT & ~filters.COMMAND),
+                get_phone,
+            ),
+        ],
+        COURIER_TRANSPORT: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                get_courier_transport,
+            ),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel_registration)],
+)
 
 application.add_handler(
     CallbackQueryHandler(
