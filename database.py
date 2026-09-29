@@ -1806,11 +1806,7 @@ def toggle_employee_shift(employee_id):
             )
             if cursor.fetchone() is not None:
                 connection.rollback()
-                return {
-                    "success": False,
-                    "reason": "active_order",
-                    "is_on_shift": True,
-                }
+                return None
 
         cursor.execute(
             """
@@ -1831,10 +1827,7 @@ def toggle_employee_shift(employee_id):
         )
         is_on_shift = cursor.fetchone()["is_on_shift"]
         connection.commit()
-        return {
-            "success": True,
-            "is_on_shift": bool(is_on_shift),
-        }
+        return bool(is_on_shift)
     except Exception:
         connection.rollback()
         raise
