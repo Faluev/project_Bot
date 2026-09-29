@@ -551,10 +551,11 @@ async def handle_deliver_order(
             message = get_message(language, "wrong_delivery_status")
         elif result["reason"] == "not_courier":
             message = get_message(language, "not_courier")
-        elif result["reason"] == "priority_order":
-            message = (
-                "⏳ Сначала доставьте заказ № "
-                f"{result['priority_order_number']}."
+        elif result["reason"] == "not_oldest":
+            message = get_message(
+                language,
+                "not_oldest_with_number",
+                order_number=result["priority_order_number"],
             )
         else:
             message = get_message(language, "delivery_failed")
