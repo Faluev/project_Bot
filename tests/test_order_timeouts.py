@@ -27,6 +27,25 @@ from handlers.employee import get_current_employee, show_work_menu
 from handlers.menu import get_admin_menu, get_admin_mode_menu, get_work_menu, get_work_menu_expanded
 
 
+class ProductionConfigTests(unittest.TestCase):
+
+    def test_production_config_exposes_validated_runtime_settings(self):
+        from config import (
+            BACKUP_PATH,
+            DATABASE_PATH,
+            LOG_LEVEL,
+            ORDER_TIMEOUT_MINUTES,
+            TIMEZONE,
+        )
+        from zoneinfo import ZoneInfo
+
+        self.assertTrue(DATABASE_PATH.is_absolute())
+        self.assertTrue(BACKUP_PATH.is_absolute())
+        self.assertIn(LOG_LEVEL, {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+        self.assertGreater(ORDER_TIMEOUT_MINUTES, 0)
+        ZoneInfo(TIMEZONE)
+
+
 class OrderTimeoutTests(unittest.TestCase):
 
     def test_retry_retries_transient_network_error(self):
