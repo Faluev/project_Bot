@@ -2112,6 +2112,56 @@ class OrderTimeoutTests(unittest.TestCase):
             second = database.get_unnotified_courier_orders(1)
             self.assertEqual(second, [])
 
+    def test_picker_cannot_skip_older_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_fifo.db"
+            database.init_database()
+
+            database.create_employee_application(
+                8001, "picker_fifo", "Али", "Сафаров", "+9928001", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                "UPDATE employees SET is_on_shift = 1 WHERE id = 1"
+            )
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES
+                    ('FIFO-1', 'Клиент 1', 'new', '2026-09-29 10:00:00', '2026-09-29 10:00:00'),
+                    ('FIFO-2', 'Клиент 2', 'new', '2026-09-29 10:01:00', '2026-09-29 10:01:00'),
+                    ('FIFO-3', 'Клиент 3', 'new', '2026-09-29 10:02:00', '2026-09-29 10:02:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            # В интерфейсе первым доступен самый старый.
+            visible = database.get_orders_for_picker(1)
+            self.assertEqual(visible[0]["order_number"], "FIFO-1")
+
+            # Прямой вызов более нового заказа тоже обязан быть заблокирован.
+            skipped = database.start_order_assembly(2, 1)
+            self.assertFalse(skipped["success"])
+            self.assertEqual(skipped["reason"], "not_oldest")
+
+            # Старый заказ можно взять.
+            first = database.start_order_assembly(1, 1)
+            self.assertTrue(first["success"])
+
+            # Пока первый не завершён, второй не становится доступным.
+            visible = database.get_orders_for_picker(1)
+            self.assertEqual([row["order_number"] for row in visible], ["FIFO-1"])
+
+            # После завершения первым становится следующий старый.
+            completed = database.complete_order_assembly(1, 1)
+            self.assertTrue(completed["success"])
+            visible = database.get_orders_for_picker(1)
+            self.assertEqual([row["order_number"] for row in visible], ["FIFO-2"])
+
     def test_picker_menu_has_no_courier_pickup_action(self):
         picker_menu = get_work_menu_expanded("picker", True, "ru")
         picker_buttons = {
