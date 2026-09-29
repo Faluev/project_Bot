@@ -30,6 +30,20 @@ from handlers.retry import send_message_with_retry
 logger = logging.getLogger(__name__)
 REJECTION_REASON = 6
 
+_courier_notification_bot = None
+_courier_notification_bot_lock = asyncio.Lock()
+
+async def _get_courier_notification_bot():
+    global _courier_notification_bot
+    if _courier_notification_bot is not None:
+        return _courier_notification_bot
+    async with _courier_notification_bot_lock:
+        if _courier_notification_bot is None:
+            bot = Bot(token=COURIER_BOT_TOKEN)
+            await bot.initialize()
+            _courier_notification_bot = bot
+    return _courier_notification_bot
+
 
 async def notify_customer_status(context, order_id, language, message_key):
     order = get_order_by_id(order_id)
@@ -101,8 +115,8 @@ async def clear_stale_courier_order_messages(context, order_id, employee_id):
             )
 
 
-async def _send_courier_order_notification(context, employee, order):
-    """Отправляет одну карточку курьеру независимо от других курьеров."""
+async def _send_courier_order_notification(bot, employee, order):
+    """Отправляет одну карточку курьеру через настоящий courier bot."""
     payment = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
     comment = (
         get_message(employee["language"], "comment", comment=order["client_comment"])
@@ -126,69 +140,42 @@ async def _send_courier_order_notification(context, employee, order):
             callback_data=f"pickup_order:{order['id']}",
         )
     ]])
-
     try:
         sent_message = await send_message_with_retry(
-            context.bot,
+            bot,
             chat_id=employee["telegram_id"],
             text=text,
             reply_markup=keyboard,
         )
     except Exception:
+        logger.exception(
+            "Could not send courier notification: order=%s employee=%s",
+            order["id"],
+            employee["id"],
+        )
         return
-
     log_courier_order_notification(
         order["id"],
         employee["id"],
         getattr(sent_message, "message_id", None),
     )
 
-
-async def notify_couriers_about_waiting_orders(
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    """Мгновенно отправляет заказы именно в курьерский бот."""
+async def notify_couriers_about_waiting_orders(context: ContextTypes.DEFAULT_TYPE):
+    """Мгновенно отправляет доступные заказы в курьерский бот."""
     employees = get_on_shift_couriers()
-    tasks = []
-
-    # Событие может произойти в picker-боте. Тогда context.bot принадлежит
-    # picker-боту, поэтому используем отдельный токен courier-бота.
-    context_bot = context.bot
-    bot_token = getattr(context_bot, "token", None)
-
-    if bot_token == COURIER_BOT_TOKEN:
-        for employee in employees:
-            for order in get_unnotified_courier_orders(employee["id"]):
-                tasks.append(
-                    _send_courier_order_notification(context, employee, order)
-                )
-
-        if tasks:
-            await asyncio.gather(*tasks)
+    if not employees:
         return
-
-    courier_bot = Bot(token=COURIER_BOT_TOKEN)
-    await courier_bot.initialize()
-    try:
-        courier_context = type(
-            "CourierNotificationContext",
-            (),
-            {"bot": courier_bot},
-        )()
-        for employee in employees:
-            for order in get_unnotified_courier_orders(employee["id"]):
-                tasks.append(
-                    _send_courier_order_notification(
-                        courier_context,
-                        employee,
-                        order,
-                    )
-                )
-
-        if tasks:
-            await asyncio.gather(*tasks)
-    finally:
-        await courier_bot.shutdown()
+    context_bot = context.bot
+    if getattr(context_bot, "token", None) == COURIER_BOT_TOKEN:
+        courier_bot = context_bot
+    else:
+        courier_bot = await _get_courier_notification_bot()
+    tasks = []
+    for employee in employees:
+        for order in get_unnotified_courier_orders(employee["id"]):
+            tasks.append(_send_courier_order_notification(courier_bot, employee, order))
+    if tasks:
+        await asyncio.gather(*tasks)
 
 
 async def show_courier_shift_report(
