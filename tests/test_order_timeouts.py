@@ -1123,19 +1123,19 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertTrue(expected.issubset(set(labels)))
         self.assertEqual(len(labels), len(expected))
 
-    def test_picker_work_menu_is_collapsed(self):
+    def test_picker_start_menu_is_expanded(self):
         markup = get_work_menu("picker", is_on_shift=True)
-        self.assertEqual(
-            [[button.text for button in row] for row in markup.keyboard],
-            [["☰ Меню"]],
-        )
+        labels = [button.text for row in markup.keyboard for button in row]
+        self.assertIn("📦 Текущие заказы", labels)
+        self.assertIn("🟢 Завершить смену", labels)
+        self.assertNotIn("☰ Меню", labels)
 
-    def test_courier_work_menu_is_collapsed(self):
+    def test_courier_start_menu_is_expanded(self):
         markup = get_work_menu("courier", is_on_shift=False)
-        self.assertEqual(
-            [[button.text for button in row] for row in markup.keyboard],
-            [["☰ Меню"]],
-        )
+        labels = [button.text for row in markup.keyboard for button in row]
+        self.assertIn("🚚 Текущий заказ", labels)
+        self.assertIn("🔴 Начать смену", labels)
+        self.assertNotIn("☰ Меню", labels)
 
     def test_show_work_menu_expands_picker_actions(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1180,6 +1180,117 @@ class OrderTimeoutTests(unittest.TestCase):
             labels = [button.text for row in markup.keyboard for button in row]
             self.assertIn("🚚 Текущий заказ", labels)
             self.assertIn("🔴 Начать смену", labels)
+
+    def test_courier_queue_shows_at_most_two_available_orders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_queue_limit.db"
+            database.init_database()
+
+            database.create_employee_application(
+                940, "courier_a", "Рустам", "Назаров", "+992940", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            for number in ("C-Q1", "C-Q2", "C-Q3", "C-Q4"):
+                connection.execute(
+                    "INSERT INTO orders (order_number, client_name, status, created_at, updated_at) "
+                    "VALUES (?, ?, 'awaiting_courier', '2026-09-29 10:00:00', '2026-09-29 10:00:00')",
+                    (number, "Клиент"),
+                )
+            connection.commit()
+            connection.close()
+
+            orders = database.get_orders_for_courier(1)
+
+            self.assertEqual([o["order_number"] for o in orders], ["C-Q1", "C-Q2"])
+
+    def test_courier_queue_refreshes_after_other_courier_takes_oldest_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_queue_refresh.db"
+            database.init_database()
+
+            for employee_id, telegram_id in ((1, 941), (2, 942)):
+                database.create_employee_application(
+                    telegram_id, f"courier_{employee_id}", "Курьер", str(employee_id),
+                    f"+992{employee_id}", "courier", "car"
+                )
+                database.update_application_status(employee_id, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1")
+            for index, number in enumerate(("C-R1", "C-R2", "C-R3")):
+                stamp = f"2026-09-29 10:{index:02d}:00"
+                connection.execute(
+                    "INSERT INTO orders (order_number, client_name, status, created_at, updated_at) "
+                    "VALUES (?, ?, 'awaiting_courier', ?, ?)",
+                    (number, "Клиент", stamp, stamp),
+                )
+            connection.commit()
+            connection.close()
+
+            first_view = database.get_orders_for_courier(1)
+            self.assertEqual([o["order_number"] for o in first_view], ["C-R1", "C-R2"])
+
+            self.assertTrue(database.pickup_order(1, 2)["success"])
+
+            refreshed = database.get_orders_for_courier(1)
+            self.assertEqual([o["order_number"] for o in refreshed], ["C-R2", "C-R3"])
+            self.assertNotIn("C-R1", [o["order_number"] for o in refreshed])
+
+    def test_courier_shift_start_uses_expanded_menu_and_shows_orders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_shift_ui.db"
+            database.init_database()
+            database.create_employee_application(
+                943, "courier_ui", "Фарид", "Саидов", "+992943", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("INSERT INTO orders (order_number, client_name, status) VALUES ('C-UI1', 'Клиент', 'awaiting_courier')")
+            connection.commit()
+            connection.close()
+
+            update = self._registration_update(943)
+            context = SimpleNamespace(bot_data={"role": "courier"}, user_data={})
+
+            asyncio.run(__import__("handlers.shift", fromlist=["toggle_shift"]).toggle_shift(update, context))
+
+            self.assertEqual(update.message.reply_text.await_count, 2)
+            first_markup = update.message.reply_text.await_args_list[0].kwargs["reply_markup"]
+            first_labels = [button.text for row in first_markup.keyboard for button in row]
+            self.assertIn("🚚 Текущий заказ", first_labels)
+            self.assertNotIn("☰ Меню", first_labels)
+            second_text = update.message.reply_text.await_args_list[1].args[0]
+            self.assertIn("C-UI1", second_text)
+
+    def test_courier_queue_never_exposes_third_order_when_two_are_active(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_queue_active_limit.db"
+            database.init_database()
+            database.create_employee_application(
+                944, "courier_active", "Нурбек", "Хакимов", "+992944", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1")
+            for index, number in enumerate(("C-A1", "C-A2", "C-A3")):
+                connection.execute(
+                    "INSERT INTO orders (order_number, client_name, status, courier_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        number, "Клиент",
+                        "in_delivery" if index < 2 else "awaiting_courier",
+                        1 if index < 2 else None,
+                        f"2026-09-29 11:0{index}:00",
+                        f"2026-09-29 11:0{index}:00",
+                    ),
+                )
+            connection.commit()
+            connection.close()
+
+            orders = database.get_orders_for_courier(1)
+            self.assertEqual([o["order_number"] for o in orders], ["C-A1", "C-A2"])
 
     def test_expanded_picker_menu_changes_shift_action(self):
         off_shift = get_work_menu_expanded("picker", False, "ru")
