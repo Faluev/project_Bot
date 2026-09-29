@@ -67,8 +67,8 @@ def get_work_menu_expanded(role, is_on_shift=False, language="ru"):
 
 
 def get_work_menu(role, is_on_shift=False, language="ru"):
-    """Свернутое рабочее меню: одна кнопка для открытия действий."""
-    return ReplyKeyboardMarkup([["☰ Меню"]], resize_keyboard=True)
+    """Совместимость: полное рабочее меню."""
+    return get_work_menu_expanded(role, is_on_shift, language)
 
 
 def get_registration_menu():
