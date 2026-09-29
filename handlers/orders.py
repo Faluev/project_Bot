@@ -335,6 +335,10 @@ async def complete_assembly(
         await query.answer(get_message(language, "access_disabled"), show_alert=True)
         return
 
+    if employee["is_on_shift"] != 1:
+        await query.answer(get_message(language, "start_shift"), show_alert=True)
+        return
+
     # Проверяем роль
     if employee["role"] != "picker":
         await query.answer(get_message(language, "picker_only"), show_alert=True)
