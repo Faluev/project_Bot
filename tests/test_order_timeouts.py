@@ -1822,7 +1822,7 @@ class OrderTimeoutTests(unittest.TestCase):
                 ["PICK-OLD-2"],
             )
 
-    def test_courier_can_take_two_orders_and_deliver_either_one_first(self):
+    def test_courier_can_take_two_orders_and_must_deliver_oldest_first(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/courier_capacity.db"
             database.init_database()
@@ -1850,21 +1850,31 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertTrue(database.pickup_order(1, 1)["success"])
             self.assertTrue(database.pickup_order(2, 1)["success"])
 
-            # Курьер не обязан доставлять сначала самый старый из своих заказов.
+            # Пока старые взятые заказы ещё в работе, третий заказ не выдаётся.
+            self.assertEqual(database.get_unnotified_courier_orders(1), [])
+
+            # Нельзя доставить более новый заказ раньше старого.
+            second_first = database.deliver_order(2, 1)
+            self.assertFalse(second_first["success"])
+            self.assertEqual(second_first["reason"], "priority_order")
+            self.assertEqual(second_first["priority_order_number"], "COURIER-1")
+
+            # Сначала доставляем старый, затем новый.
+            self.assertTrue(database.deliver_order(1, 1)["success"])
+            self.assertEqual(database.get_unnotified_courier_orders(1), [])
+
             self.assertTrue(database.deliver_order(2, 1)["success"])
 
-            # После освобождения одного места следующий ожидающий заказ доступен сразу.
+            # После доставки всех ранее взятых заказов следующий старый
+            # ожидающий заказ становится доступен сразу.
             available = database.get_unnotified_courier_orders(1)
             self.assertEqual(
                 [row["order_number"] for row in available],
                 ["COURIER-3"],
             )
 
-            self.assertTrue(database.deliver_order(1, 1)["success"])
-
             self.assertTrue(database.pickup_order(3, 1)["success"])
             self.assertTrue(database.deliver_order(3, 1)["success"])
-
 
     def test_application_rejects_unknown_role_without_creating_employee(self):
         with tempfile.TemporaryDirectory() as temp_dir:
