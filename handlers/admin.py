@@ -333,7 +333,8 @@ async def show_orders_feed(
             f"Адрес: {order['delivery_address']}\n"
             f"Сборщик: {picker}\n"
             f"Курьер: {courier}\n"
-            f"Сумма: {order['payment_amount']}\n"
+            f"Способ оплаты: {order['payment_method'] or '—'}\n"
+            f"Сумма: {order['payment_amount'] if order['payment_amount'] is not None else '—'}\n"
             f"{total_time}"
             f"Обновлён: {order['updated_at']}\n"
         )
