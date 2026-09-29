@@ -18,7 +18,7 @@ from database import (
     get_employee_by_telegram_id,
 )
 
-from handlers.menu import get_work_menu, get_admin_menu, get_registration_menu
+from handlers.menu import get_work_menu, get_admin_menu, get_admin_mode_menu, get_registration_menu
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
 from handlers.employee import get_current_employee
@@ -118,12 +118,27 @@ async def start_registration(
 
     telegram_id = update.effective_user.id
 
-    if telegram_id == ADMIN_TELEGRAM_ID and update.message.text != "👷 Регистрация сборщика":
-        await update.message.reply_text(
-            "👨‍💼 Панель администратора готова.",
-            reply_markup=get_admin_menu(),
-        )
-        return ConversationHandler.END
+    # В боте сборщика администратор сначала выбирает режим:
+    # отдельная кнопка для админки и отдельная кнопка для работы сборщиком.
+    if telegram_id == ADMIN_TELEGRAM_ID:
+        if update.message.text in ("/start", "👨‍💼 Админка"):
+            await update.message.reply_text(
+                "👤 Выберите режим работы:",
+                reply_markup=get_admin_mode_menu(),
+            )
+            if update.message.text == "👨‍💼 Админка":
+                await update.message.reply_text(
+                    "👨‍💼 Панель администратора готова.",
+                    reply_markup=get_admin_menu(),
+                )
+            return ConversationHandler.END
+
+        if update.message.text not in ("👷 Сборщик", "👷 Регистрация сборщика"):
+            await update.message.reply_text(
+                "👤 Выберите режим работы:",
+                reply_markup=get_admin_mode_menu(),
+            )
+            return ConversationHandler.END
 
     employee = get_employee_by_telegram_id(
         telegram_id,
