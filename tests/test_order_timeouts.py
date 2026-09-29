@@ -1862,7 +1862,7 @@ class OrderTimeoutTests(unittest.TestCase):
             # Нельзя доставить более новый заказ раньше старого.
             second_first = database.deliver_order(2, 1)
             self.assertFalse(second_first["success"])
-            self.assertEqual(second_first["reason"], "priority_order")
+            self.assertEqual(second_first["reason"], "not_oldest")
             self.assertEqual(second_first["priority_order_number"], "COURIER-1")
 
             # Сначала доставляем старый, затем новый.
