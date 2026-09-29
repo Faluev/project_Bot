@@ -531,7 +531,10 @@ def update_application_status(employee_id, new_status):
                 role,
                 transport_type,
                 application_status,
-                language
+                is_active,
+                is_on_shift,
+                language,
+                created_at
             FROM employees
             WHERE id = ?
         """, (employee_id,))
