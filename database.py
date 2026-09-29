@@ -1840,7 +1840,7 @@ def get_unnotified_courier_orders(employee_id):
         connection.close()
 
 
-def log_courier_order_notification(order_id, employee_id):
+def log_courier_order_notification(order_id, employee_id, message_id=None):
     connection = get_connection()
 
     try:
@@ -1854,7 +1854,7 @@ def log_courier_order_notification(order_id, employee_id):
             )
             SELECT ?, ?, 'courier_order_notification',
                    'awaiting_courier', 'awaiting_courier',
-                   'Заказ отправлен курьеру'
+                   'Заказ отправлен курьеру' || CASE WHEN ? IS NOT NULL THEN ';message_id:' || ? ELSE '' END
             WHERE EXISTS (
                 SELECT 1 FROM orders
                 WHERE id = ? AND status = 'awaiting_courier'
@@ -1866,13 +1866,52 @@ def log_courier_order_notification(order_id, employee_id):
                     AND action = 'courier_order_notification'
               )
             """,
-            (order_id, employee_id, order_id, order_id, employee_id),
+            (order_id, employee_id, message_id, message_id, order_id, order_id, employee_id),
         )
         connection.commit()
         return cursor.rowcount == 1
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
+
+
+def get_courier_order_notification_messages(order_id, exclude_employee_id=None):
+    """Возвращает Telegram message_id уведомлений об этом заказе у других курьеров."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        query = """
+            SELECT
+                al.employee_id,
+                e.telegram_id,
+                al.details
+            FROM action_log al
+            JOIN employees e ON e.id = al.employee_id
+            WHERE al.order_id = ?
+              AND al.action = 'courier_order_notification'
+              AND al.details LIKE '%;message_id:%'
+        """
+        params = [order_id]
+        if exclude_employee_id is not None:
+            query += " AND al.employee_id != ?"
+            params.append(exclude_employee_id)
+
+        cursor.execute(query, params)
+
+        result = []
+        for row in cursor.fetchall():
+            try:
+                message_id = int(row["details"].split(";message_id:", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            result.append({
+                "employee_id": row["employee_id"],
+                "telegram_id": row["telegram_id"],
+                "message_id": message_id,
+            })
+        return result
     finally:
         connection.close()
 
