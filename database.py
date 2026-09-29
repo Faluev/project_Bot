@@ -2595,7 +2595,7 @@ def deliver_order(order_id, employee_id):
         # нельзя завершить первым — даже если у него уже есть активный статус.
         cursor.execute(
             """
-            SELECT 1
+            SELECT older_order.id, older_order.order_number
             FROM orders older_order
             WHERE older_order.courier_id = ?
               AND older_order.status = 'in_delivery'
@@ -2614,13 +2614,20 @@ def deliver_order(order_id, employee_id):
                       AND older_order.id < ?
                   )
               )
+            ORDER BY older_order.created_at ASC, older_order.id ASC
             LIMIT 1
             """,
             (employee_id, order_id, order_id, order_id),
         )
-        if cursor.fetchone() is not None:
+        older_order = cursor.fetchone()
+        if older_order is not None:
             connection.rollback()
-            return {"success": False, "reason": "not_oldest"}
+            return {
+                "success": False,
+                "reason": "not_oldest",
+                "priority_order_id": older_order["id"],
+                "priority_order_number": older_order["order_number"],
+            }
 
         cursor.execute(
             """
