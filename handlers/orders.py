@@ -445,11 +445,14 @@ async def complete_assembly(
     # Сборка успешно завершена
     order_number = result["order_number"]
 
-    # Сначала мгновенно передаём заказ курьерам.
-    # Это критический путь: курьер должен получить заказ сразу после завершения сборки.
-    await notify_couriers_about_waiting_orders(context)
+    # Запускаем уведомление курьеров в фоне, чтобы обработка кнопки
+    # «Заказ собран» не ждала сетевой ответ Telegram.
+    context.application.create_task(
+        notify_couriers_about_waiting_orders(context),
+        name=f"notify-couriers-order-{order_id}",
+    )
 
-    # После этого обновляем очередь сборщиков. Фоновый job остаётся резервным механизмом.
+    # Сборщик сразу получает следующий заказ; периодическая задача остаётся страховкой.
     await notify_pickers_about_new_orders(context)
 
     await query.answer(
