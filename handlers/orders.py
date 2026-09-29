@@ -186,56 +186,68 @@ async def show_current_orders(
         )
 
 
+async def notify_next_order_to_picker(
+    context: ContextTypes.DEFAULT_TYPE,
+    employee,
+):
+    """Сразу выдаёт освободившемуся сборщику следующий самый старый заказ."""
+    orders = get_unnotified_new_orders(employee["id"])
+    if not orders:
+        return False
+
+    order = orders[0]
+    items = get_order_items(order["id"])
+    item_text = "\n".join(
+        f"• {item['product_name']} — {item['quantity']} шт."
+        for item in items
+    ) or "—"
+
+    message = get_message(
+        employee["language"],
+        "new_order",
+        order_number=order["order_number"],
+        client_name=order["client_name"],
+        items=item_text,
+        created_at=order["created_at"],
+    )
+    if order["client_comment"]:
+        message += get_message(
+            employee["language"],
+            "comment",
+            comment=order["client_comment"],
+        )
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "▶️ Начать сборку",
+            callback_data=f"start_assembly:{order['id']}",
+        )
+    ]])
+
+    try:
+        sent_message = await send_message_with_retry(
+            context.bot,
+            chat_id=employee["telegram_id"],
+            text=message,
+            reply_markup=keyboard,
+        )
+    except Exception:
+        return False
+
+    log_new_order_notification(
+        order["id"],
+        employee["id"],
+        getattr(sent_message, "message_id", None),
+    )
+    return True
+
+
 async def notify_pickers_about_new_orders(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """Отправляет новые заказы сборщикам на смене без дублей."""
     for employee in get_on_shift_pickers():
-        for order in get_unnotified_new_orders(employee["id"]):
-            items = get_order_items(order["id"])
-            item_text = "\n".join(
-                f"• {item['product_name']} — {item['quantity']} шт."
-                for item in items
-            ) or "—"
-            message = get_message(
-                employee["language"],
-                "new_order",
-                order_number=order["order_number"],
-                client_name=order["client_name"],
-                items=item_text,
-                created_at=order["created_at"],
-            )
-            if order["client_comment"]:
-                message += get_message(
-                    employee["language"],
-                    "comment",
-                    comment=order["client_comment"],
-                )
-
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "▶️ Начать сборку",
-                    callback_data=f"start_assembly:{order['id']}",
-                )]
-            ])
-
-            try:
-                sent_message = await send_message_with_retry(
-                    context.bot,
-                    chat_id=employee["telegram_id"],
-                    text=message,
-                    reply_markup=keyboard,
-                )
-            except Exception:
-                continue
-
-            log_new_order_notification(
-                order["id"],
-                employee["id"],
-                getattr(sent_message, "message_id", None),
-            )
-
-
+        await notify_next_order_to_picker(context, employee)
 # ==========================================
 # НАЧАТЬ СБОРКУ
 # ==========================================
@@ -453,7 +465,10 @@ async def complete_assembly(
     # Не ждём второго заказа и не прячем уведомление в фоновой задаче.
     await notify_couriers_about_waiting_orders(context)
 
-    # После передачи курьеру обновляем очередь сборщиков.
+    # После передачи курьеру сразу выдаём следующий самый старый заказ
+    # освободившемуся сборщику — без ручного нажатия «Текущие заказы».
+    await notify_next_order_to_picker(context, employee)
+    # Остальным сборщикам также обновляем очередь.
     await notify_pickers_about_new_orders(context)
 
     await query.answer(
