@@ -35,16 +35,13 @@ _courier_notification_bot_lock = asyncio.Lock()
 
 async def _get_courier_notification_bot():
     global _courier_notification_bot
-    if _courier_notification_bot is not None:
-        return _courier_notification_bot
 
     async with _courier_notification_bot_lock:
         if _courier_notification_bot is None:
-            bot = Bot(token=COURIER_BOT_TOKEN)
-            await bot.initialize()
-            _courier_notification_bot = bot
+            _courier_notification_bot = Bot(token=COURIER_BOT_TOKEN)
+            await _courier_notification_bot.initialize()
 
-    return _courier_notification_bot
+        return _courier_notification_bot
 
 
 async def notify_customer_status(context, order_id, language, message_key):
