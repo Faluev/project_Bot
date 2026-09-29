@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram import (
@@ -98,51 +99,62 @@ async def clear_stale_courier_order_messages(context, order_id, employee_id):
             )
 
 
+async def _send_courier_order_notification(context, employee, order):
+    """Отправляет одну карточку курьеру независимо от других курьеров."""
+    payment = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
+    comment = (
+        get_message(employee["language"], "comment", comment=order["client_comment"])
+        if order["client_comment"]
+        else ""
+    )
+    text = get_message(
+        employee["language"],
+        "courier_order",
+        order_number=order["order_number"],
+        client_name=order["client_name"],
+        phone=order["client_phone"],
+        address=order["delivery_address"],
+        comment=comment,
+        payment=payment,
+        amount=order["payment_amount"],
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            get_message(employee["language"], "pickup_button"),
+            callback_data=f"pickup_order:{order['id']}",
+        )
+    ]])
+
+    try:
+        sent_message = await send_message_with_retry(
+            context.bot,
+            chat_id=employee["telegram_id"],
+            text=text,
+            reply_markup=keyboard,
+        )
+    except Exception:
+        return
+
+    log_courier_order_notification(
+        order["id"],
+        employee["id"],
+        getattr(sent_message, "message_id", None),
+    )
+
+
 async def notify_couriers_about_waiting_orders(
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """Deliver awaiting-courier orders to active couriers on shift."""
+    """Отправляет ожидающие заказы курьерам сразу и параллельно."""
+    tasks = []
     for employee in get_on_shift_couriers():
         for order in get_unnotified_courier_orders(employee["id"]):
-            payment = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
-            comment = (
-                get_message(employee["language"], "comment", comment=order["client_comment"])
-                if order["client_comment"]
-                else ""
+            tasks.append(
+                _send_courier_order_notification(context, employee, order)
             )
-            text = get_message(
-                employee["language"],
-                "courier_order",
-                order_number=order["order_number"],
-                client_name=order["client_name"],
-                phone=order["client_phone"],
-                address=order["delivery_address"],
-                comment=comment,
-                payment=payment,
-                amount=order["payment_amount"],
-            )
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    get_message(employee["language"], "pickup_button"),
-                    callback_data=f"pickup_order:{order['id']}",
-                )
-            ]])
 
-            try:
-                sent_message = await send_message_with_retry(
-                    context.bot,
-                    chat_id=employee["telegram_id"],
-                    text=text,
-                    reply_markup=keyboard,
-                )
-            except Exception:
-                continue
-
-            log_courier_order_notification(
-                order["id"],
-                employee["id"],
-                getattr(sent_message, "message_id", None),
-            )
+    if tasks:
+        await asyncio.gather(*tasks)
 
 
 async def show_courier_shift_report(
