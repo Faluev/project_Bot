@@ -18,7 +18,7 @@ from handlers.registration import build_admin_contact_message
 from handlers.retry import send_message_with_retry
 from handlers.i18n import MESSAGES
 from handlers.employee import get_current_employee, show_work_menu
-from handlers.menu import get_admin_menu, get_work_menu, get_work_menu_expanded
+from handlers.menu import get_admin_menu, get_admin_mode_menu, get_work_menu, get_work_menu_expanded
 
 
 class OrderTimeoutTests(unittest.TestCase):
@@ -2018,6 +2018,75 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertFalse(database.is_valid_order_transition("delivered", "new"))
         self.assertFalse(database.is_valid_order_transition("delivered", "assembling"))
         self.assertFalse(database.is_valid_order_transition("rejected", "awaiting_courier"))
+
+
+    def test_admin_mode_menu_has_separate_admin_and_picker_buttons(self):
+        menu = get_admin_mode_menu()
+        rows = menu.keyboard
+
+        self.assertEqual(rows, [["👨‍💼 Админка"], ["👷 Сборщик"]])
+
+    def test_picker_and_admin_menus_are_separate(self):
+        admin_menu = get_admin_menu()
+        picker_menu = get_work_menu_expanded("picker", False, "ru")
+
+        admin_buttons = {
+            button
+            for row in admin_menu.keyboard
+            for button in row
+        }
+        picker_buttons = {
+            button
+            for row in picker_menu.keyboard
+            for button in row
+        }
+
+        self.assertIn("📋 Заявки", admin_buttons)
+        self.assertIn("👥 Сотрудники", admin_buttons)
+        self.assertIn("📦 Текущие заказы", picker_buttons)
+        self.assertIn("🔴 Начать смену", picker_buttons)
+        self.assertNotIn("📋 Заявки", picker_buttons)
+        self.assertNotIn("📦 Текущие заказы", admin_buttons)
+
+    def test_picker_shift_start_shows_current_order_immediately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_shift_start.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7201, "picker_shift", "Али", "Сафаров", "+9927201", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status, created_at, updated_at) VALUES "
+                "('PICKER-LIVE-1', 'Клиент 1', 'new', '2026-09-29 10:00:00', '2026-09-29 10:00:00')"
+            )
+            connection.commit()
+            connection.close()
+
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(id=7201, language_code="ru"),
+                message=SimpleNamespace(
+                    reply_text=AsyncMock()
+                ),
+            )
+            context = SimpleNamespace(
+                bot_data={"role": "picker"},
+                user_data={},
+            )
+
+            asyncio.run(
+                __import__("handlers.shift", fromlist=["toggle_shift"]).toggle_shift(
+                    update,
+                    context,
+                )
+            )
+
+            replies = update.message.reply_text.await_args_list
+            self.assertEqual(len(replies), 2)
+            self.assertIn("PICKER-LIVE-1", replies[1].args[0])
 
 if __name__ == "__main__":
     unittest.main()
