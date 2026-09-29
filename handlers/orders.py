@@ -293,7 +293,10 @@ async def start_assembly(
     # Если назначить не получилось
     if not result["success"]:
 
-        error_message = _order_action_error(language, result["reason"])
+        if result["reason"] == "picker_capacity_reached":
+            error_message = "⚠️ У вас уже есть заказ в сборке. Сначала завершите его."
+        else:
+            error_message = _order_action_error(language, result["reason"])
         await query.answer(
             error_message,
             show_alert=True,
