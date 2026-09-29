@@ -66,7 +66,7 @@ from handlers.orders import (
 )
 from handlers.shift import toggle_shift
 from handlers.language import toggle_language
-from handlers.menu import get_admin_menu, get_registration_menu
+from handlers.menu import get_admin_menu, get_admin_mode_menu, get_registration_menu
 from handlers.employee import show_work_menu
 
 
@@ -121,7 +121,7 @@ registration_handler = ConversationHandler(
     entry_points=[
         CommandHandler("start", start_registration),
         MessageHandler(
-            filters.Regex(r"^(🚀 Начать|👷 Регистрация сборщика)$"),
+            filters.Regex(r"^(🚀 Начать|👷 Регистрация сборщика|👷 Сборщик|👨‍💼 Админка)$"),
             start_registration,
         ),
     ],
