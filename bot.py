@@ -76,13 +76,13 @@ from handlers.employee import show_work_menu
 
 async def setup_bot_commands(application):
     """Настраивает команды Telegram для сотрудников и администратора."""
+    # /cancel остаётся рабочей fallback-командой во время диалога,
+    # но не показывается постоянно в меню Telegram.
     employee_commands = [
         BotCommand("start", "Начать работу или регистрацию"),
-        BotCommand("cancel", "Отменить текущий диалог"),
     ]
     admin_commands = [
         BotCommand("start", "Начать работу"),
-        BotCommand("cancel", "Отменить текущий диалог"),
         BotCommand("applications", "Заявки сотрудников"),
         BotCommand("employees", "Список сотрудников"),
         BotCommand("orders", "Лента заказов"),
