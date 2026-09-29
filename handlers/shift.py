@@ -3,7 +3,7 @@ from handlers.employee import get_current_employee
 from telegram.ext import ContextTypes
 
 from database import toggle_employee_shift
-from handlers.menu import get_work_menu
+from handlers.menu import get_work_menu_expanded
 from handlers.i18n import get_message
 
 
@@ -34,9 +34,13 @@ async def toggle_shift(
     status_text = get_message(employee["language"], status_key)
     await update.message.reply_text(
         status_text,
-        reply_markup=get_work_menu(
+        reply_markup=get_work_menu_expanded(
             employee["role"],
             is_on_shift,
             employee["language"],
         ),
     )
+
+    if is_on_shift and employee["role"] == "courier":
+        from handlers.courier_orders import show_courier_orders
+        await show_courier_orders(update, context)
