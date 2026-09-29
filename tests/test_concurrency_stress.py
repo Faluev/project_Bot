@@ -1,8 +1,13 @@
 import gc
+import os
 import sqlite3
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+os.environ.setdefault("BOT_TOKEN", "test-bot-token")
+os.environ.setdefault("COURIER_BOT_TOKEN", "test-courier-bot-token")
+os.environ.setdefault("ADMIN_TELEGRAM_ID", "999999999")
 
 import database
 
