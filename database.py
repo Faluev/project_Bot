@@ -1880,7 +1880,6 @@ def get_admin_audit_log(limit=20):
                 al.created_at,
                 al.order_id,
                 o.order_number,
-                al.employee_id,
                 employee.first_name || ' ' || employee.last_name AS employee_name,
                 employee.role AS employee_role
             FROM action_log al
