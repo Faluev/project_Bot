@@ -129,6 +129,10 @@ application.bot_data["role"] = "courier"
 # Заявки сотрудника могут приходить администратору в чат курьерского бота
 # от старых уведомлений. Оставляем обработчик approve/reject для совместимости.
 application.add_handler(
+    CommandHandler("start", start),
+)
+
+application.add_handler(
     MessageHandler(
         filters.TEXT & filters.Regex(r"^☰ Меню$"),
         show_work_menu,
