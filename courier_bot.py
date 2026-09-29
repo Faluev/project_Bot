@@ -131,6 +131,14 @@ application.add_handler(courier_registration_handler)
 # Заявки сотрудника могут приходить администратору в чат курьерского бота
 # от старых уведомлений. Оставляем обработчик approve/reject для совместимости.
 application.add_handler(
+    MessageHandler(
+        filters.TEXT & filters.Regex(r"^☰ Меню$"),
+        show_work_menu,
+    )
+)
+
+
+application.add_handler(
     CallbackQueryHandler(
         process_application,
         pattern=r"^(approve|reject):\d+$",
