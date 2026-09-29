@@ -2026,6 +2026,29 @@ class OrderTimeoutTests(unittest.TestCase):
 
         self.assertEqual(rows, [["👨‍💼 Админка"], ["👷 Сборщик"]])
 
+    def test_picker_menu_has_no_courier_pickup_action(self):
+        picker_menu = get_work_menu_expanded("picker", True, "ru")
+        picker_buttons = {
+            button.text
+            for row in picker_menu.keyboard
+            for button in row
+        }
+
+        self.assertIn("📦 Текущие заказы", picker_buttons)
+        self.assertNotIn("🚚 Текущий заказ", picker_buttons)
+        self.assertNotIn("Забрал заказ", picker_buttons)
+
+    def test_courier_menu_has_courier_order_entry(self):
+        courier_menu = get_work_menu_expanded("courier", True, "ru")
+        courier_buttons = {
+            button.text
+            for row in courier_menu.keyboard
+            for button in row
+        }
+
+        self.assertIn("🚚 Текущий заказ", courier_buttons)
+        self.assertNotIn("📦 Текущие заказы", courier_buttons)
+
     def test_picker_and_admin_menus_are_separate(self):
         admin_menu = get_admin_menu()
         picker_menu = get_work_menu_expanded("picker", False, "ru")
