@@ -2088,5 +2088,37 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(len(replies), 2)
             self.assertIn("PICKER-LIVE-1", replies[1].args[0])
 
+
+    def test_picker_notification_message_ids_are_tracked_for_stale_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_notifications.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7301, "picker_a", "Малика", "Сафарова", "+9927301", "picker"
+            )
+            database.create_employee_application(
+                7302, "picker_b", "Фарход", "Нуров", "+9927302", "picker"
+            )
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status) VALUES ('PICK-NOTIFY-1', 'Клиент', 'new')"
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(database.log_new_order_notification(1, 1, message_id=101))
+            self.assertTrue(database.log_new_order_notification(1, 2, message_id=202))
+
+            other = database.get_picker_order_notification_messages(
+                1,
+                exclude_employee_id=1,
+            )
+            self.assertEqual(
+                other,
+                [{"employee_id": 2, "telegram_id": 7302, "message_id": 202}],
+            )
+
 if __name__ == "__main__":
     unittest.main()
