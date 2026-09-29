@@ -12,11 +12,11 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, ADMIN_TELEGRAM_ID
+from config import BOT_TOKEN, ADMIN_TELEGRAM_ID, LOG_LEVEL
 from database import init_database
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)

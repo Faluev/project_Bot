@@ -1,12 +1,11 @@
 import sqlite3
 from datetime import datetime
-from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from database import DATABASE_PATH
+from config import BACKUP_PATH, DATABASE_PATH, TIMEZONE
 
 
-BASE_DIR = Path(__file__).resolve().parent
-BACKUP_DIR = BASE_DIR / "backups"
+BACKUP_DIR = BACKUP_PATH
 
 
 def backup_database():
@@ -15,7 +14,7 @@ def backup_database():
         raise FileNotFoundError(f"Database not found: {DATABASE_PATH}")
 
     BACKUP_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d_%H-%M-%S")
     backup_path = BACKUP_DIR / f"delivery_{timestamp}.db"
 
     with sqlite3.connect(DATABASE_PATH) as source:
