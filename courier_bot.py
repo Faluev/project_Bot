@@ -126,8 +126,6 @@ application.bot_data["role"] = "courier"
 
 
 
-application.add_handler(courier_registration_handler)
-
 # Заявки сотрудника могут приходить администратору в чат курьерского бота
 # от старых уведомлений. Оставляем обработчик approve/reject для совместимости.
 application.add_handler(
