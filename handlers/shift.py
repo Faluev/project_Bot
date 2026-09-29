@@ -41,6 +41,10 @@ async def toggle_shift(
         ),
     )
 
-    if is_on_shift and employee["role"] == "courier":
-        from handlers.courier_orders import show_courier_orders
-        await show_courier_orders(update, context)
+    if is_on_shift:
+        if employee["role"] == "courier":
+            from handlers.courier_orders import show_courier_orders
+            await show_courier_orders(update, context)
+        elif employee["role"] == "picker":
+            from handlers.orders import show_current_orders
+            await show_current_orders(update, context)
