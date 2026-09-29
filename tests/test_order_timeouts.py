@@ -11,6 +11,12 @@ from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import ConversationHandler
 
+import os
+
+os.environ.setdefault("BOT_TOKEN", "test-bot-token")
+os.environ.setdefault("COURIER_BOT_TOKEN", "test-courier-bot-token")
+os.environ.setdefault("ADMIN_TELEGRAM_ID", "999999999")
+
 import database
 from handlers import registration
 from handlers.courier_orders import build_client_contact_message
