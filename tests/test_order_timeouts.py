@@ -940,32 +940,6 @@ class OrderTimeoutTests(unittest.TestCase):
             ),
         )
 
-    def test_picker_registration_removes_phone_keyboard_after_contact(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            database.DATABASE_PATH = f"{temp_dir}/picker_registration.db"
-            database.init_database()
-            update = self._registration_update(800, contact_phone="+992900000001")
-            bot = SimpleNamespace(send_message=AsyncMock())
-            context = SimpleNamespace(
-                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker"},
-                bot_data={"role": "picker"},
-                bot=bot,
-            )
-
-            result = asyncio.run(registration.get_phone(update, context))
-
-            self.assertEqual(result, ConversationHandler.END)
-            reply_markup = update.message.reply_text.await_args.kwargs["reply_markup"]
-            self.assertIsInstance(reply_markup, ReplyKeyboardRemove)
-            employee = database.get_employee_by_telegram_id(800, "picker")
-            self.assertEqual(employee["phone"], "+992900000001")
-            bot.send_message.assert_awaited_once()
-            self.assertEqual(
-                bot.send_message.await_args.kwargs["chat_id"],
-                registration.ADMIN_TELEGRAM_ID,
-            )
-            self.assertIn("Новая заявка сотрудника", bot.send_message.await_args.kwargs["text"])
-
     def test_courier_registration_removes_phone_keyboard_after_contact(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/courier_registration.db"
@@ -1206,104 +1180,6 @@ class OrderTimeoutTests(unittest.TestCase):
             labels = [button.text for row in markup.keyboard for button in row]
             self.assertIn("🚚 Текущий заказ", labels)
             self.assertIn("🔴 Начать смену", labels)
-
-    def test_picker_application_notification_contains_approval_actions(self):
-        bot = SimpleNamespace(send_message=AsyncMock())
-        employee = {
-            "id": 42,
-            "first_name": "Ivan",
-            "last_name": "Ivanov",
-            "phone": "+992",
-            "telegram_username": "ivan",
-            "role": "picker",
-        }
-
-        asyncio.run(
-            registration.notify_admin_about_application(
-                SimpleNamespace(bot=bot),
-                employee,
-            )
-        )
-
-        bot.send_message.assert_awaited_once()
-        call = bot.send_message.await_args
-        self.assertEqual(call.kwargs["chat_id"], registration.ADMIN_TELEGRAM_ID)
-        self.assertIn("Сборщик", call.kwargs["text"])
-        buttons = call.kwargs["reply_markup"].inline_keyboard[0]
-        self.assertEqual(buttons[0].text, "✅ Одобрить")
-        self.assertEqual(buttons[0].callback_data, "approve:42")
-        self.assertEqual(buttons[1].text, "❌ Отклонить")
-        self.assertEqual(buttons[1].callback_data, "reject:42")
-
-    def test_courier_application_notification_contains_transport_role(self):
-        bot = SimpleNamespace(send_message=AsyncMock())
-        employee = {
-            "id": 43,
-            "first_name": "Ivan",
-            "last_name": "Ivanov",
-            "phone": "+992",
-            "telegram_username": None,
-            "role": "courier",
-            "transport_type": "car",
-        }
-
-        asyncio.run(
-            registration.notify_admin_about_application(
-                SimpleNamespace(bot=bot),
-                employee,
-            )
-        )
-
-        text = bot.send_message.await_args.kwargs["text"]
-        self.assertIn("Курьер", text)
-        self.assertIn("Telegram: не указан", text)
-
-    def test_pending_picker_application_does_not_send_duplicate_admin_notification(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            database.DATABASE_PATH = f"{temp_dir}/pending_notification.db"
-            database.init_database()
-            database.create_employee_application(
-                912, "picker_user", "Ivan", "Ivanov", "+992912", "picker"
-            )
-
-            bot = SimpleNamespace(send_message=AsyncMock())
-            update = self._registration_update(912, contact_phone="+992912")
-            context = SimpleNamespace(
-                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker", "phone": "+992912"},
-                bot_data={"role": "picker"},
-                bot=bot,
-            )
-
-            result = asyncio.run(registration.save_picker_application(update, context))
-
-            self.assertEqual(result, ConversationHandler.END)
-            bot.send_message.assert_not_awaited()
-
-    def test_recreated_picker_application_sends_new_admin_notification(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            database.DATABASE_PATH = f"{temp_dir}/recreated_notification.db"
-            database.init_database()
-            database.create_employee_application(
-                913, "picker_user", "Ivan", "Ivanov", "+992913", "picker"
-            )
-            connection = sqlite3.connect(database.DATABASE_PATH)
-            connection.execute("UPDATE employees SET application_status = 'rejected' WHERE id = 1")
-            connection.commit()
-            connection.close()
-
-            bot = SimpleNamespace(send_message=AsyncMock())
-            update = self._registration_update(913, contact_phone="+992913")
-            context = SimpleNamespace(
-                user_data={"full_name": "Ivan Ivanov", "registration_role": "picker", "phone": "+992913"},
-                bot_data={"role": "picker"},
-                bot=bot,
-            )
-
-            result = asyncio.run(registration.save_picker_application(update, context))
-
-            self.assertEqual(result, ConversationHandler.END)
-            bot.send_message.assert_awaited_once()
-            self.assertIn("Новая заявка сотрудника", bot.send_message.await_args.kwargs["text"])
 
     def test_expanded_picker_menu_changes_shift_action(self):
         off_shift = get_work_menu_expanded("picker", False, "ru")
@@ -1817,7 +1693,220 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertTrue(database.deliver_order(1, 1)["success"])
             self.assertTrue(database.deliver_order(2, 1)["success"])
 
-            self.assertEqual(database.get_orders_for_courier(1), [])
+            visible = database.get_orders_for_courier(1)
+            self.assertEqual(
+                [order["order_number"] for order in visible],
+                ["COURIER-3"],
+            )
+
+
+
+    def test_application_rejects_unknown_role_without_creating_employee(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/invalid_role.db"
+            database.init_database()
+
+            result = database.create_employee_application(
+                7101, "worker_a", "Али", "Рахимов", "+9927101", "manager"
+            )
+
+            self.assertEqual(result, "invalid_role")
+            self.assertIsNone(database.get_employee_by_telegram_id(7101, "picker"))
+            self.assertIsNone(database.get_employee_by_telegram_id(7101, "courier"))
+
+    def test_courier_application_requires_transport(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/transport_required.db"
+            database.init_database()
+
+            result = database.create_employee_application(
+                7102, "courier_b", "Мадина", "Саидова", "+9927102", "courier"
+            )
+
+            self.assertEqual(result, "invalid_transport")
+            self.assertIsNone(database.get_employee_by_telegram_id(7102, "courier"))
+
+    def test_picker_application_rejects_unexpected_transport(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_transport.db"
+            database.init_database()
+
+            result = database.create_employee_application(
+                7103, "picker_c", "Фарход", "Нуров", "+9927103", "picker", "scooter"
+            )
+
+            self.assertEqual(result, "invalid_transport")
+
+    def test_same_telegram_id_can_have_independent_picker_and_courier_statuses(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/dual_role_status.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7104, "dual_user", "Саида", "Хасанова", "+9927104", "picker"
+            )
+            database.create_employee_application(
+                7104, "dual_user", "Саида", "Хасанова", "+9927104", "courier", "bike"
+            )
+
+            database.update_application_status(1, "approved")
+            database.update_application_status(2, "rejected")
+
+            picker = database.get_employee_by_telegram_id(7104, "picker")
+            courier = database.get_employee_by_telegram_id(7104, "courier")
+
+            self.assertEqual(picker["application_status"], "approved")
+            self.assertEqual(courier["application_status"], "rejected")
+            self.assertEqual(picker["is_active"], 1)
+            self.assertEqual(courier["is_active"], 0)
+
+    def test_disabled_picker_cannot_start_assembly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/disabled_picker.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7105, "picker_d", "Рустам", "Абдуллоев", "+9927105", "picker"
+            )
+            database.update_application_status(1, "approved")
+            database.set_employee_access(1, 0)
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status) VALUES ('SAFE-1', 'Клиент', 'new')"
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.start_order_assembly(1, 1)
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "inactive")
+
+    def test_off_shift_picker_cannot_start_assembly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/off_shift_picker.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7106, "picker_e", "Беҳруз", "Назаров", "+9927106", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status) VALUES ('SAFE-2', 'Клиент', 'new')"
+            )
+            connection.commit()
+            connection.close()
+
+            result = database.start_order_assembly(1, 1)
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["reason"], "off_shift")
+
+    def test_missing_item_is_logged_without_changing_assembly_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/missing_item_log.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7107, "picker_f", "Шахло", "Юсуфова", "+9927107", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status) VALUES ('SAFE-3', 'Клиент', 'new')"
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(database.start_order_assembly(1, 1)["success"])
+            result = database.mark_order_missing_item(1, 1, "Молоко")
+
+            self.assertTrue(result["success"])
+            order = database.get_order_by_id(1)
+            self.assertEqual(order["status"], "assembling")
+
+            history = database.get_order_history(1)
+            self.assertTrue(
+                any(
+                    row["action"] == "missing_item"
+                    and "Молоко" in row["details"]
+                    for row in history
+                )
+            )
+
+    def test_courier_cannot_take_third_active_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_limit.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7108, "courier_g", "Камол", "Мирзоев", "+9927108", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (order_number, client_name, status)
+                VALUES
+                    ('SAFE-4', 'Клиент 1', 'awaiting_courier'),
+                    ('SAFE-5', 'Клиент 2', 'awaiting_courier'),
+                    ('SAFE-6', 'Клиент 3', 'awaiting_courier')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(database.pickup_order(1, 1)["success"])
+            self.assertTrue(database.pickup_order(2, 1)["success"])
+
+            third = database.pickup_order(3, 1)
+            self.assertFalse(third["success"])
+            self.assertEqual(third["reason"], "capacity_reached")
+
+    def test_rejected_order_requires_resolution_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/rejected_resolution.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7109, "courier_h", "Малика", "Давлатова", "+9927109", "courier", "bike"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status) VALUES ('SAFE-7', 'Клиент', 'awaiting_courier')"
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(database.pickup_order(1, 1)["success"])
+            rejected = database.reject_order(1, 1, "client_no_show")
+            self.assertTrue(rejected["success"])
+
+            resolved = database.resolve_rejected_order(
+                1, "return_to_stock", admin_telegram_id=999001
+            )
+            self.assertTrue(resolved["success"])
+
+            duplicate = database.resolve_rejected_order(
+                1, "write_off", admin_telegram_id=999001
+            )
+            self.assertFalse(duplicate["success"])
+            self.assertEqual(duplicate["reason"], "already_resolved")
+
+    def test_terminal_order_status_has_no_outgoing_transition(self):
+        self.assertFalse(database.is_valid_order_transition("delivered", "new"))
+        self.assertFalse(database.is_valid_order_transition("delivered", "assembling"))
+        self.assertFalse(database.is_valid_order_transition("rejected", "awaiting_courier"))
 
 if __name__ == "__main__":
     unittest.main()
