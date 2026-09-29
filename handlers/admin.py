@@ -850,26 +850,42 @@ async def notify_admin_about_timeouts(context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает таймауты и сообщает администратору.
 
-    Таймаут 'assembling' принудительно освобождает заказ и возвращает
-    его в FIFO-очередь. Таймауты 'new' и 'awaiting_courier' не меняют
-    статус, а только эскалируются администратору.
+    Таймауты 'assembling' и 'in_delivery' принудительно освобождают
+    заказ и возвращают его в соответствующую очередь. Таймауты 'new'
+    и 'awaiting_courier' не меняют статус, а только эскалируются админу.
     """
     requeued = process_order_timeouts(ORDER_TIMEOUT_MINUTES)
 
     for order in requeued:
         if order["action"] == "timeout_requeue":
-            text = (
-                "⏰ Заказ автоматически возвращён в очередь\n\n"
-                f"Заказ № {order['order_number']}\n"
-                "Статус: Сборка → Новый\n"
-                f"Сборка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
-                "Заказ снова доступен сборщикам по строгому FIFO."
-            )
-            await send_message_with_retry(
-                context.bot,
-                chat_id=ADMIN_TELEGRAM_ID,
-                text=text,
-            )
+            if order["status"] == "awaiting_courier":
+                text = (
+                    "⏰ Заказ автоматически возвращён в очередь курьеров\n\n"
+                    f"Заказ № {order['order_number']}\n"
+                    "Статус: В доставке → Ожидает курьера\n"
+                    f"Доставка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
+                    "Заказ снова доступен другим курьерам."
+                )
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=text,
+                )
+                from handlers.courier_orders import notify_couriers_about_waiting_orders
+                await notify_couriers_about_waiting_orders(context)
+            else:
+                text = (
+                    "⏰ Заказ автоматически возвращён в очередь\n\n"
+                    f"Заказ № {order['order_number']}\n"
+                    "Статус: Сборка → Новый\n"
+                    f"Сборка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
+                    "Заказ снова доступен сборщикам по строгому FIFO."
+                )
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=text,
+                )
             continue
 
         status_label = get_status_label(order["status"])
