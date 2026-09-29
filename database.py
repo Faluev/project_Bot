@@ -1018,6 +1018,24 @@ def start_order_assembly(order_id, employee_id):
                 "reason": "not_found",
             }
 
+        # Один сборщик одновременно собирает только один заказ.
+        cursor.execute(
+            """
+            SELECT 1
+            FROM orders
+            WHERE status = 'assembling'
+              AND picker_id = ?
+            LIMIT 1
+            """,
+            (employee_id,),
+        )
+        if cursor.fetchone() is not None:
+            connection.rollback()
+            return {
+                "success": False,
+                "reason": "picker_capacity_reached",
+            }
+
         # Заказ уже кто-то взял
         if not is_valid_order_transition(order["status"], "assembling"):
             connection.rollback()
@@ -2313,28 +2331,6 @@ def deliver_order(order_id, employee_id):
         if order["courier_id"] != employee_id:
             connection.rollback()
             return {"success": False, "reason": "not_courier"}
-
-        # Доставка идёт строго по очереди: сначала самый старый
-        # заказ из текущей загрузки курьера.
-        cursor.execute(
-            """
-            SELECT id, order_number
-            FROM orders
-            WHERE status = 'in_delivery'
-              AND courier_id = ?
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-            (employee_id,),
-        )
-        priority_order = cursor.fetchone()
-        if priority_order is not None and priority_order["id"] != order_id:
-            connection.rollback()
-            return {
-                "success": False,
-                "reason": "priority_order",
-                "priority_order_number": priority_order["order_number"],
-            }
 
         cursor.execute(
             """
