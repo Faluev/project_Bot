@@ -37,11 +37,13 @@ async def _get_courier_notification_bot():
     global _courier_notification_bot
     if _courier_notification_bot is not None:
         return _courier_notification_bot
+
     async with _courier_notification_bot_lock:
         if _courier_notification_bot is None:
             bot = Bot(token=COURIER_BOT_TOKEN)
             await bot.initialize()
             _courier_notification_bot = bot
+
     return _courier_notification_bot
 
 
