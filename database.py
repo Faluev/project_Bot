@@ -1,10 +1,9 @@
 import sqlite3
-from pathlib import Path
+
+from config import DATABASE_PATH
 
 
-# Путь к файлу базы данных
-BASE_DIR = Path(__file__).resolve().parent
-DATABASE_PATH = BASE_DIR / "delivery.db"
+# Путь к файлу базы данных задаётся production-конфигурацией.
 
 
 # Разрешённые переходы статусов заказа.
