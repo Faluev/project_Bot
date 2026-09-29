@@ -2,7 +2,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 
 from telegram.ext import (
     ContextTypes,
@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import ADMIN_TELEGRAM_ID
+from config import ADMIN_TELEGRAM_ID, BOT_TOKEN
 
 from database import (
     create_employee_application,
@@ -69,12 +69,20 @@ async def notify_admin_about_application(context, employee_data):
             "💬 Telegram: не указан"
         )
     )
-    await send_message_with_retry(
-        context.bot,
-        chat_id=ADMIN_TELEGRAM_ID,
-        text=text,
-        reply_markup=keyboard,
-    )
+    # Административные заявки всегда отправляем в основной бот сборщика,
+    # где находится единая админ-панель. Это не зависит от того,
+    # из какого рабочего бота сотрудник подавал заявку.
+    admin_bot = Bot(token=BOT_TOKEN)
+    await admin_bot.initialize()
+    try:
+        await send_message_with_retry(
+            admin_bot,
+            chat_id=ADMIN_TELEGRAM_ID,
+            text=text,
+            reply_markup=keyboard,
+        )
+    finally:
+        await admin_bot.shutdown()
 
 
 def build_admin_contact_message(employee, text):
