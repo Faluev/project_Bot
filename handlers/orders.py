@@ -448,14 +448,11 @@ async def complete_assembly(
     # Сборка успешно завершена
     order_number = result["order_number"]
 
-    # Запускаем уведомление курьеров в фоне, чтобы обработка кнопки
-    # «Заказ собран» не ждала сетевой ответ Telegram.
-    context.application.create_task(
-        notify_couriers_about_waiting_orders(context),
-        name=f"notify-couriers-order-{order_id}",
-    )
+    # Курьер получает заказ сразу после завершения сборки.
+    # Не ждём второго заказа и не прячем уведомление в фоновой задаче.
+    await notify_couriers_about_waiting_orders(context)
 
-    # Сборщик сразу получает следующий заказ; периодическая задача остаётся страховкой.
+    # После передачи курьеру обновляем очередь сборщиков.
     await notify_pickers_about_new_orders(context)
 
     await query.answer(
