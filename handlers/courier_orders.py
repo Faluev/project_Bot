@@ -306,6 +306,8 @@ async def handle_pickup_order(
     if not result["success"]:
         if result["reason"] == "already_taken":
             message = "⚠️ Этот заказ уже забрал другой курьер."
+        elif result["reason"] == "capacity_reached":
+            message = "⚠️ У вас уже два заказа в доставке. Сначала завершите один из них."
         elif result["reason"] == "not_found":
             message = "❌ Заказ не найден."
         else:
@@ -325,6 +327,7 @@ async def handle_pickup_order(
         employee["language"],
         "client_in_delivery",
     )
+    await notify_couriers_about_waiting_orders(context)
     delivery_keyboard = [[
         InlineKeyboardButton(
             get_message(employee["language"], "deliver_button"),
@@ -487,6 +490,11 @@ async def handle_deliver_order(
             message = get_message(language, "wrong_delivery_status")
         elif result["reason"] == "not_courier":
             message = get_message(language, "not_courier")
+        elif result["reason"] == "priority_order":
+            message = (
+                "⏳ Сначала доставьте заказ № "
+                f"{result['priority_order_number']}."
+            )
         else:
             message = get_message(language, "delivery_failed")
 
