@@ -335,6 +335,19 @@ def create_employee_application(
     if role not in EMPLOYEE_ROLES:
         return "invalid_role"
 
+    if not isinstance(first_name, str) or not first_name.strip():
+        return "invalid_first_name"
+    if not isinstance(last_name, str) or not last_name.strip():
+        return "invalid_last_name"
+    if not isinstance(phone, str) or not phone.strip():
+        return "invalid_phone"
+
+    if role == "courier":
+        if not isinstance(transport_type, str) or not transport_type.strip():
+            return "invalid_transport"
+    elif transport_type not in (None, ""):
+        return "invalid_transport"
+
     connection = get_connection()
     language = language if language in ("ru", "tg") else "ru"
 
