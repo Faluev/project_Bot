@@ -1045,6 +1045,40 @@ def start_order_assembly(order_id, employee_id):
                 "status": order["status"],
             }
 
+        # Сборщик всегда идёт строго от старого заказа к новому.
+        # Даже старая карточка/кнопка не должна позволить перескочить через
+        # более ранний заказ в очереди.
+        cursor.execute(
+            """
+            SELECT 1
+            FROM orders older_order
+            WHERE older_order.status = 'new'
+              AND (
+                  older_order.created_at < (
+                      SELECT created_at
+                      FROM orders
+                      WHERE id = ?
+                  )
+                  OR (
+                      older_order.created_at = (
+                          SELECT created_at
+                          FROM orders
+                          WHERE id = ?
+                      )
+                      AND older_order.id < ?
+                  )
+              )
+            LIMIT 1
+            """,
+            (order_id, order_id, order_id),
+        )
+        if cursor.fetchone() is not None:
+            connection.rollback()
+            return {
+                "success": False,
+                "reason": "not_oldest",
+            }
+
         # Назначаем сборщика и меняем статус
         cursor.execute(
             """
