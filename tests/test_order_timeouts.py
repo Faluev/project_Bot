@@ -92,6 +92,36 @@ class OrderTimeoutTests(unittest.TestCase):
 
         self.assertIsNone(get_current_employee(update, context))
 
+    def test_approved_employee_result_contains_full_work_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/approval_result.db"
+            database.init_database()
+
+            database.create_employee_application(
+                8101, "picker_ok", "Али", "Сафаров", "+9928101", "picker"
+            )
+            employee = database.update_application_status(1, "approved")
+
+            self.assertEqual(employee["application_status"], "approved")
+            self.assertEqual(employee["is_active"], 1)
+            self.assertEqual(employee["is_on_shift"], 0)
+            self.assertEqual(employee["role"], "picker")
+
+    def test_approved_courier_result_contains_full_work_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/approval_courier_result.db"
+            database.init_database()
+
+            database.create_employee_application(
+                8102, "courier_ok", "Беҳруз", "Назаров", "+9928102", "courier", "car"
+            )
+            employee = database.update_application_status(1, "approved")
+
+            self.assertEqual(employee["application_status"], "approved")
+            self.assertEqual(employee["is_active"], 1)
+            self.assertEqual(employee["is_on_shift"], 0)
+            self.assertEqual(employee["role"], "courier")
+
     def test_translation_catalogs_have_matching_keys(self):
         self.assertEqual(set(MESSAGES["ru"]), set(MESSAGES["tg"]))
 
