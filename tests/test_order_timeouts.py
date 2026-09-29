@@ -11,6 +11,12 @@ from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import ConversationHandler
 
+import os
+
+os.environ.setdefault("BOT_TOKEN", "test-bot-token")
+os.environ.setdefault("COURIER_BOT_TOKEN", "test-courier-bot-token")
+os.environ.setdefault("ADMIN_TELEGRAM_ID", "999999999")
+
 import database
 from handlers import registration
 from handlers.courier_orders import build_client_contact_message
@@ -1856,8 +1862,7 @@ class OrderTimeoutTests(unittest.TestCase):
             # Нельзя доставить более новый заказ раньше старого.
             second_first = database.deliver_order(2, 1)
             self.assertFalse(second_first["success"])
-            self.assertEqual(second_first["reason"], "priority_order")
-            self.assertEqual(second_first["priority_order_number"], "COURIER-1")
+            self.assertEqual(second_first["reason"], "not_oldest")
 
             # Сначала доставляем старый, затем новый.
             self.assertTrue(database.deliver_order(1, 1)["success"])

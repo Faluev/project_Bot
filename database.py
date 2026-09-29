@@ -2375,6 +2375,38 @@ def deliver_order(order_id, employee_id):
             connection.rollback()
             return {"success": False, "reason": "not_courier"}
 
+        # Курьер доставляет свои активные заказы строго от старого к новому.
+        # Если более старый заказ всё ещё находится в доставке, более новый
+        # нельзя завершить первым — даже если у него уже есть активный статус.
+        cursor.execute(
+            """
+            SELECT 1
+            FROM orders older_order
+            WHERE older_order.courier_id = ?
+              AND older_order.status = 'in_delivery'
+              AND (
+                  older_order.created_at < (
+                      SELECT created_at
+                      FROM orders
+                      WHERE id = ?
+                  )
+                  OR (
+                      older_order.created_at = (
+                          SELECT created_at
+                          FROM orders
+                          WHERE id = ?
+                      )
+                      AND older_order.id < ?
+                  )
+              )
+            LIMIT 1
+            """,
+            (employee_id, order_id, order_id, order_id),
+        )
+        if cursor.fetchone() is not None:
+            connection.rollback()
+            return {"success": False, "reason": "not_oldest"}
+
         cursor.execute(
             """
             UPDATE orders
