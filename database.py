@@ -1416,6 +1416,7 @@ def get_order_timeouts(timeout_minutes=15):
                     WHEN o.status = 'new' THEN 'Новый'
                     WHEN o.status = 'assembling' THEN 'Собирается'
                     WHEN o.status = 'awaiting_courier' THEN 'Ожидает курьера'
+                    WHEN o.status = 'in_delivery' THEN 'В доставке'
                     ELSE o.status
                 END AS status_label
             FROM orders o
@@ -2130,6 +2131,16 @@ def get_unnotified_courier_orders(employee_id):
                   WHERE al.order_id = o.id
                     AND al.employee_id = ?
                     AND al.action = 'courier_order_notification'
+                    AND al.id > COALESCE(
+                        (
+                            SELECT MAX(requeue.id)
+                            FROM action_log requeue
+                            WHERE requeue.order_id = o.id
+                              AND requeue.action = 'timeout_requeue'
+                              AND requeue.new_status = 'awaiting_courier'
+                        ),
+                        0
+                    )
               )
               AND NOT EXISTS (
                   SELECT 1
