@@ -169,6 +169,8 @@ class ConcurrentOrderStressTests(unittest.TestCase):
         newer = database.deliver_order(2, courier_id)
         self.assertFalse(newer["success"])
         self.assertEqual(newer["reason"], "not_oldest")
+        self.assertEqual(newer["priority_order_id"], 1)
+        self.assertEqual(newer["priority_order_number"], "STRESS-001")
 
         older = database.deliver_order(1, courier_id)
         self.assertTrue(older["success"])
