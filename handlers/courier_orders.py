@@ -552,19 +552,11 @@ async def handle_deliver_order(
         elif result["reason"] == "not_courier":
             message = get_message(language, "not_courier")
         elif result["reason"] == "not_oldest":
-            priority_order = (
-                get_order_by_id(result["priority_order_id"])
-                if result.get("priority_order_id")
-                else None
+            message = get_message(
+                language,
+                "not_oldest_with_number",
+                order_number=result["priority_order_number"],
             )
-            if priority_order is not None:
-                message = get_message(
-                    language,
-                    "not_oldest_with_number",
-                    order_number=priority_order["order_number"],
-                )
-            else:
-                message = get_message(language, "not_oldest")
         else:
             message = get_message(language, "delivery_failed")
 
