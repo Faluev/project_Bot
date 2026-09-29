@@ -127,12 +127,11 @@ async def show_current_orders(
         )
 
         if order["status"] == "assembling":
-            # У сборщика уже есть заказ в работе: показываем только
-            # действия по текущему заказу, не следующий заказ очереди.
-            message = get_message(
+            # Заказ остаётся полностью видимым у сборщика после принятия:
+            # товары, адрес, комментарий и оплата нужны во время сборки.
+            message += "\n" + get_message(
                 employee["language"],
-                "assembly_started",
-                order_number=order["order_number"],
+                "assembly_started_suffix",
             )
             keyboard = [
                 [
@@ -318,13 +317,37 @@ async def start_assembly(
         show_alert=True,
     )
 
-    # Обновляем сообщение
+    # Оставляем полную карточку заказа на экране после принятия.
+    order = get_order_by_id(order_id)
+    items = get_order_items(order_id)
+    item_text = "\n".join(
+        f"• {item['product_name']} — {item['quantity']} шт."
+        for item in items
+    ) or "—"
+    comment = (
+        f"\n💬 Комментарий клиента:\n{order['client_comment']}\n"
+        if order["client_comment"]
+        else ""
+    )
+    payment_text = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
+    message = get_message(
+        employee["language"],
+        "picker_order",
+        order_number=order["order_number"],
+        client=order["client_name"],
+        phone=order["client_phone"],
+        address=order["delivery_address"],
+        items=item_text,
+        comment=comment,
+        payment=payment_text,
+        amount=order["payment_amount"],
+    )
+    message += "\n" + get_message(
+        employee["language"],
+        "assembly_started_suffix",
+    )
     await query.edit_message_text(
-        get_message(
-            employee["language"],
-            "assembly_started",
-            order_number=order_number,
-        ),
+        message,
         reply_markup=reply_markup,
     )
 
