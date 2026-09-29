@@ -1836,7 +1836,7 @@ def get_admin_orders_feed():
                 o.created_at,
                 o.updated_at,
                 CASE
-                    WHEN o.status = 'delivered' THEN ROUND(
+                    WHEN o.status IN ('delivered', 'rejected') THEN ROUND(
                         (julianday(o.updated_at) - julianday(o.created_at)) * 24 * 60,
                         1
                     )
