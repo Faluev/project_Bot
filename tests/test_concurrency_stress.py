@@ -1,3 +1,4 @@
+import gc
 import sqlite3
 import tempfile
 import unittest
@@ -13,6 +14,10 @@ class ConcurrentOrderStressTests(unittest.TestCase):
         database.init_database()
 
     def tearDown(self):
+        # На Windows sqlite-файл нельзя удалить, пока соединение ещё держится
+        # до финализации объекта. Принудительно собираем такие объекты перед
+        # удалением временного каталога.
+        gc.collect()
         self.temp_dir.cleanup()
 
     def _employee(self, telegram_id, role):
@@ -136,7 +141,7 @@ class ConcurrentOrderStressTests(unittest.TestCase):
         self.assertEqual(assembling, list(range(1, 11)))
         self.assertEqual(new, list(range(11, 21)))
 
-    def test_courier_cannot_deliver_newer_order_when_older_is_also_active(self):
+    def _prepare_two_active_courier_orders(self):
         courier_id = self._employee(9401, "courier")
         self._insert_orders(2)
 
@@ -151,26 +156,70 @@ class ConcurrentOrderStressTests(unittest.TestCase):
 
         self.assertTrue(database.pickup_order(1, courier_id)["success"])
         self.assertTrue(database.pickup_order(2, courier_id)["success"])
+        return courier_id
 
-        def deliver(order_id):
-            return database.deliver_order(order_id, courier_id)
+    def test_courier_cannot_deliver_newer_order_when_older_is_also_active(self):
+        courier_id = self._prepare_two_active_courier_orders()
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(deliver, 1), pool.submit(deliver, 2)]
-            results = [future.result() for future in as_completed(futures)]
+        newer = database.deliver_order(2, courier_id)
+        self.assertFalse(newer["success"])
+        self.assertEqual(newer["reason"], "not_oldest")
 
-        successful = [result for result in results if result["success"]]
-        rejected = [result for result in results if not result["success"]]
+        older = database.deliver_order(1, courier_id)
+        self.assertTrue(older["success"])
 
-        self.assertEqual(len(successful), 1)
-        self.assertEqual(len(rejected), 1)
+        newer_after_older = database.deliver_order(2, courier_id)
+        self.assertTrue(newer_after_older["success"])
 
         statuses = {
             order_id: database.get_order_by_id(order_id)["status"]
             for order_id in (1, 2)
         }
-        self.assertEqual(statuses[1], "delivered")
-        self.assertEqual(statuses[2], "in_delivery")
+        self.assertEqual(statuses, {1: "delivered", 2: "delivered"})
+
+    def test_concurrent_delivery_preserves_oldest_first(self):
+        courier_id = self._prepare_two_active_courier_orders()
+
+        def deliver(order_id):
+            return database.deliver_order(order_id, courier_id)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {
+                order_id: pool.submit(deliver, order_id)
+                for order_id in (1, 2)
+            }
+            results = {
+                order_id: future.result()
+                for order_id, future in futures.items()
+            }
+
+        statuses = {
+            order_id: database.get_order_by_id(order_id)["status"]
+            for order_id in (1, 2)
+        }
+
+        # Допускаются оба корректных исхода гонки:
+        # 1) старый заказ захватывает транзакцию первым -> оба доставлены;
+        # 2) новый пытается первым -> он получает not_oldest, старый доставляется.
+        if results[2]["success"]:
+            self.assertTrue(results[1]["success"])
+            self.assertEqual(statuses, {1: "delivered", 2: "delivered"})
+
+            with sqlite3.connect(database.DATABASE_PATH) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT order_id
+                    FROM action_log
+                    WHERE action = 'deliver_order'
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+
+            self.assertEqual([row[0] for row in rows], [1, 2])
+        else:
+            self.assertEqual(results[2]["reason"], "not_oldest")
+            self.assertTrue(results[1]["success"])
+            self.assertEqual(statuses, {1: "delivered", 2: "in_delivery"})
 
 
 if __name__ == "__main__":
