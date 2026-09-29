@@ -1751,7 +1751,48 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(database.get_orders_for_picker(1)[0]["order_number"], "QUEUE-2")
             self.assertEqual(database.get_orders_for_picker(2)[0]["order_number"], "QUEUE-2")
 
-    def test_courier_can_take_two_orders_and_must_deliver_oldest_first(self):
+    def test_picker_can_have_only_one_active_order_and_gets_oldest_next(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_single_active.db"
+            database.init_database()
+
+            database.create_employee_application(
+                5901, "picker", "Сборщик", "Тестовый", "+9925901", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (order_number, client_name, status, created_at, updated_at)
+                VALUES
+                    ('PICK-OLD-1', 'Клиент 1', 'new', '2026-09-29 09:00:00', '2026-09-29 09:00:00'),
+                    ('PICK-OLD-2', 'Клиент 2', 'new', '2026-09-29 09:05:00', '2026-09-29 09:05:00'),
+                    ('PICK-OLD-3', 'Клиент 3', 'new', '2026-09-29 09:10:00', '2026-09-29 09:10:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertEqual(
+                [row["order_number"] for row in database.get_orders_for_picker(1)],
+                ["PICK-OLD-1"],
+            )
+
+            self.assertTrue(database.start_order_assembly(1, 1)["success"])
+
+            second = database.start_order_assembly(2, 1)
+            self.assertFalse(second["success"])
+            self.assertEqual(second["reason"], "picker_capacity_reached")
+
+            self.assertTrue(database.complete_order_assembly(1, 1)["success"])
+            self.assertEqual(
+                [row["order_number"] for row in database.get_orders_for_picker(1)],
+                ["PICK-OLD-2"],
+            )
+
+    def test_courier_can_take_two_orders_and_deliver_either_one_first(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/courier_capacity.db"
             database.init_database()
@@ -1776,40 +1817,23 @@ class OrderTimeoutTests(unittest.TestCase):
             connection.commit()
             connection.close()
 
-            visible = database.get_orders_for_courier(1)
-            self.assertEqual(
-                [order["order_number"] for order in visible],
-                ["COURIER-1", "COURIER-2"],
-            )
-
             self.assertTrue(database.pickup_order(1, 1)["success"])
-            visible = database.get_orders_for_courier(1)
-            self.assertEqual(
-                [order["order_number"] for order in visible],
-                ["COURIER-1", "COURIER-2"],
-            )
-
             self.assertTrue(database.pickup_order(2, 1)["success"])
-            visible = database.get_orders_for_courier(1)
-            self.assertEqual(
-                [order["order_number"] for order in visible],
-                ["COURIER-1", "COURIER-2"],
-            )
 
-            second_first = database.deliver_order(2, 1)
-            self.assertFalse(second_first["success"])
-            self.assertEqual(second_first["reason"], "priority_order")
-            self.assertEqual(second_first["priority_order_number"], "COURIER-1")
-
-            self.assertTrue(database.deliver_order(1, 1)["success"])
+            # Курьер не обязан доставлять сначала самый старый из своих заказов.
             self.assertTrue(database.deliver_order(2, 1)["success"])
 
-            visible = database.get_orders_for_courier(1)
+            # После освобождения одного места следующий ожидающий заказ доступен сразу.
+            available = database.get_unnotified_courier_orders(1)
             self.assertEqual(
-                [order["order_number"] for order in visible],
+                [row["order_number"] for row in available],
                 ["COURIER-3"],
             )
 
+            self.assertTrue(database.deliver_order(1, 1)["success"])
+
+            self.assertTrue(database.pickup_order(3, 1)["success"])
+            self.assertTrue(database.deliver_order(3, 1)["success"])
 
 
     def test_application_rejects_unknown_role_without_creating_employee(self):
