@@ -126,21 +126,38 @@ async def show_current_orders(
             amount=order["payment_amount"],
         )
 
-        # Кнопка "Начать сборку"
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    get_message(employee["language"], "start_assembly_button"),
-                    callback_data=(
-                        f"start_assembly:{order['id']}"
+        if order["status"] == "assembling":
+            # У сборщика уже есть заказ в работе: показываем только
+            # действия по текущему заказу, не следующий заказ очереди.
+            message = get_message(
+                employee["language"],
+                "assembly_started",
+                order_number=order["order_number"],
+            )
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "complete_button"),
+                        callback_data=f"complete_assembly:{order['id']}",
                     ),
-                )
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "missing_button"),
+                        callback_data=f"missing_item:{order['id']}",
+                    ),
+                ]
             ]
-        ]
+        else:
+            # Вне сборки показываем только самый старый новый заказ.
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "start_assembly_button"),
+                        callback_data=f"start_assembly:{order['id']}",
+                    )
+                ]
+            ]
 
-        reply_markup = InlineKeyboardMarkup(
-            keyboard
-        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_text(
             message,
