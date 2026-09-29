@@ -2026,6 +2026,68 @@ class OrderTimeoutTests(unittest.TestCase):
 
         self.assertEqual(rows, [["👨‍💼 Админка"], ["👷 Сборщик"]])
 
+    def test_one_assembled_order_is_sent_without_waiting_for_second(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/one_courier_order.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7401, "courier_one", "Рустам", "Каримов", "+9927401", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES (
+                    'ONE-READY-1', 'Клиент 1', 'awaiting_courier',
+                    '2026-09-29 10:00:00', '2026-09-29 10:00:00'
+                )
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            available = database.get_unnotified_courier_orders(1)
+
+            self.assertEqual(len(available), 1)
+            self.assertEqual(available[0]["order_number"], "ONE-READY-1")
+
+    def test_second_order_is_independent_and_does_not_gate_first_notification(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_order_gate.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7402, "courier_two", "Фарход", "Нуров", "+9927402", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES
+                    ('READY-1', 'Клиент 1', 'awaiting_courier', '2026-09-29 10:00:00', '2026-09-29 10:00:00'),
+                    ('READY-2', 'Клиент 2', 'new', '2026-09-29 10:01:00', '2026-09-29 10:01:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            first = database.get_unnotified_courier_orders(1)
+            self.assertEqual([row["order_number"] for row in first], ["READY-1"])
+
+            self.assertTrue(database.log_courier_order_notification(1, 1, message_id=501))
+
+            second = database.get_unnotified_courier_orders(1)
+            self.assertEqual(second, [])
+
     def test_picker_menu_has_no_courier_pickup_action(self):
         picker_menu = get_work_menu_expanded("picker", True, "ru")
         picker_buttons = {
