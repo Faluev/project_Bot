@@ -21,6 +21,7 @@ from database import (
 )
 from handlers.i18n import get_message
 from handlers.retry import send_message_with_retry
+from handlers.courier_orders import notify_couriers_about_waiting_orders
 
 MISSING_ITEM = 5
 
@@ -371,6 +372,10 @@ async def complete_assembly(
 
     # Сборка успешно завершена
     order_number = result["order_number"]
+
+    # Передаём заказ курьерам сразу после завершения сборки.
+    # Фоновый job остаётся резервным механизмом доставки уведомления.
+    await notify_couriers_about_waiting_orders(context)
 
     await query.answer(
         "✅ Заказ собран!",
