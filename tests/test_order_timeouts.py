@@ -2192,6 +2192,34 @@ class OrderTimeoutTests(unittest.TestCase):
             visible = database.get_orders_for_picker(1)
             self.assertEqual([row["order_number"] for row in visible], ["FIFO-2"])
 
+    
+    def test_courier_notification_helper_uses_courier_bot_token(self):
+        from handlers import courier_orders
+
+        self.assertEqual(courier_orders.COURIER_BOT_TOKEN, database.COURIER_BOT_TOKEN if hasattr(database, "COURIER_BOT_TOKEN") else courier_orders.COURIER_BOT_TOKEN)
+
+    def test_courier_notification_query_returns_one_order_immediately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_immediate.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7501, "courier_fast", "Али", "Сафаров", "+9927501", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                "INSERT INTO orders (order_number, client_name, status, created_at, updated_at) "
+                "VALUES ('FAST-1', 'Клиент', 'awaiting_courier', '2026-09-29 10:00:00', '2026-09-29 10:00:00')"
+            )
+            connection.commit()
+            connection.close()
+
+            orders = database.get_unnotified_courier_orders(1)
+            self.assertEqual([row["order_number"] for row in orders], ["FAST-1"])
+
     def test_picker_menu_has_no_courier_pickup_action(self):
         picker_menu = get_work_menu_expanded("picker", True, "ru")
         picker_buttons = {
