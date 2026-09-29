@@ -1093,7 +1093,7 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertIn("имя", registration_prompt)
         self.assertIn("фамили", registration_prompt)
 
-    def test_admin_start_opens_admin_menu(self):
+    def test_admin_start_opens_mode_selection(self):
         update = self._registration_update(registration.ADMIN_TELEGRAM_ID, text="/start")
         context = SimpleNamespace(user_data={}, bot_data={"role": "picker"})
 
@@ -1103,7 +1103,8 @@ class OrderTimeoutTests(unittest.TestCase):
         markup = update.message.reply_text.await_args.kwargs["reply_markup"]
         self.assertIsInstance(markup, ReplyKeyboardMarkup)
         labels = [button.text for row in markup.keyboard for button in row]
-        self.assertIn("📋 Заявки", labels)
+        self.assertIn("👨‍💼 Админка", labels)
+        self.assertIn("👷 Сборщик", labels)
         self.assertIn("👷 Регистрация сборщика", labels)
 
     def test_admin_menu_contains_all_core_actions(self):
