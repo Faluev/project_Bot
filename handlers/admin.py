@@ -31,6 +31,8 @@ from database import (
     set_employee_access,
     get_rejected_orders,
     resolve_rejected_order,
+    retry_rejected_order,
+    get_retryable_rejected_orders,
     log_order_timeout_alert,
     get_pending_missing_item_alerts,
     log_missing_item_alert_sent,
@@ -723,7 +725,8 @@ async def show_rejected_orders(
         return
 
     orders = get_rejected_orders()
-    if not orders:
+    retryable = get_retryable_rejected_orders()
+    if not orders and not retryable:
         await update.message.reply_text("✅ Необработанных отклонённых заказов нет.")
         return
 
@@ -744,6 +747,19 @@ async def show_rejected_orders(
             f"⚠️ Заказ № {order['order_number']} отклонён\n"
             f"Клиент: {order['client_name']}\n"
             f"Причина: {order['rejection_details'] or 'не указана'}",
+            reply_markup=keyboard,
+        )
+
+    for order in retryable:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🚚 Разрешить повторную доставку",
+                callback_data=f"retry_delivery:{order['id']}",
+            )
+        ]])
+        await update.message.reply_text(
+            f"🔁 Заказ № {order['order_number']} готов к повторной доставке\n"
+            f"Клиент: {order['client_name']}",
             reply_markup=keyboard,
         )
 
@@ -788,30 +804,88 @@ async def process_rejected_order(
     )
 
 
+async def process_retry_delivery(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_TELEGRAM_ID:
+        await answer_callback_safely(query, "У вас нет доступа.", show_alert=True)
+        return
+
+    await answer_callback_safely(query)
+    try:
+        order_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await edit_callback_message_safely(query, "❌ Некорректный ID заказа.")
+        return
+
+    result = retry_rejected_order(
+        order_id,
+        admin_telegram_id=query.from_user.id,
+    )
+    if not result["success"]:
+        messages = {
+            "not_found": "Заказ не найден.",
+            "wrong_status": "Заказ уже не находится в статусе «Отклонён».",
+            "resolution_required": "Сначала нужно принять решение по товару.",
+            "written_off": "Для списанного заказа повторная доставка недоступна.",
+            "already_retried": "Повторная доставка уже была запущена.",
+        }
+        await edit_callback_message_safely(
+            query,
+            f"ℹ️ {messages.get(result['reason'], 'Не удалось запустить повторную доставку.')}",
+        )
+        return
+
+    from handlers.courier_orders import notify_couriers_about_waiting_orders
+    await notify_couriers_about_waiting_orders(context)
+    await edit_callback_message_safely(
+        query,
+        f"🚚 Заказ № {result['order_number']} возвращён в очередь курьеров для повторной доставки.",
+    )
+
+
 async def notify_admin_about_timeouts(context: ContextTypes.DEFAULT_TYPE):
     """
     Обрабатывает таймауты и сообщает администратору.
 
-    Таймаут 'assembling' принудительно освобождает заказ и возвращает
-    его в FIFO-очередь. Таймауты 'new' и 'awaiting_courier' не меняют
-    статус, а только эскалируются администратору.
+    Таймауты 'assembling' и 'in_delivery' принудительно освобождают
+    заказ и возвращают его в соответствующую очередь. Таймауты 'new'
+    и 'awaiting_courier' не меняют статус, а только эскалируются админу.
     """
     requeued = process_order_timeouts(ORDER_TIMEOUT_MINUTES)
 
     for order in requeued:
         if order["action"] == "timeout_requeue":
-            text = (
-                "⏰ Заказ автоматически возвращён в очередь\n\n"
-                f"Заказ № {order['order_number']}\n"
-                "Статус: Сборка → Новый\n"
-                f"Сборка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
-                "Заказ снова доступен сборщикам по строгому FIFO."
-            )
-            await send_message_with_retry(
-                context.bot,
-                chat_id=ADMIN_TELEGRAM_ID,
-                text=text,
-            )
+            if order["status"] == "awaiting_courier":
+                text = (
+                    "⏰ Заказ автоматически возвращён в очередь курьеров\n\n"
+                    f"Заказ № {order['order_number']}\n"
+                    "Статус: В доставке → Ожидает курьера\n"
+                    f"Доставка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
+                    "Заказ снова доступен другим курьерам."
+                )
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=text,
+                )
+                from handlers.courier_orders import notify_couriers_about_waiting_orders
+                await notify_couriers_about_waiting_orders(context)
+            else:
+                text = (
+                    "⏰ Заказ автоматически возвращён в очередь\n\n"
+                    f"Заказ № {order['order_number']}\n"
+                    "Статус: Сборка → Новый\n"
+                    f"Сборка превысила таймаут {ORDER_TIMEOUT_MINUTES} минут.\n"
+                    "Заказ снова доступен сборщикам по строгому FIFO."
+                )
+                await send_message_with_retry(
+                    context.bot,
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=text,
+                )
             continue
 
         status_label = get_status_label(order["status"])
@@ -901,5 +975,9 @@ def get_admin_handlers():
         CallbackQueryHandler(
             process_rejected_order,
             pattern=r"^rejected_resolution:\d+:(return_to_stock|write_off)$",
+        ),
+        CallbackQueryHandler(
+            process_retry_delivery,
+            pattern=r"^retry_delivery:\d+$",
         ),
     ]

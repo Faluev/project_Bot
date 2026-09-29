@@ -30,7 +30,7 @@ ORDER_STATUS_TRANSITIONS = {
     "awaiting_courier": {"in_delivery"},
     "in_delivery": {"delivered", "rejected"},
     "delivered": set(),
-    "rejected": set(),
+    "rejected": {"awaiting_courier"},
 }
 
 
@@ -1416,10 +1416,11 @@ def get_order_timeouts(timeout_minutes=15):
                     WHEN o.status = 'new' THEN 'Новый'
                     WHEN o.status = 'assembling' THEN 'Собирается'
                     WHEN o.status = 'awaiting_courier' THEN 'Ожидает курьера'
+                    WHEN o.status = 'in_delivery' THEN 'В доставке'
                     ELSE o.status
                 END AS status_label
             FROM orders o
-            WHERE o.status IN ('new', 'assembling', 'awaiting_courier')
+            WHERE o.status IN ('new', 'assembling', 'awaiting_courier', 'in_delivery')
               AND o.updated_at <= datetime('now', '-' || ? || ' minutes')
               AND NOT EXISTS (
                   SELECT 1
@@ -1444,6 +1445,9 @@ def process_order_timeouts(timeout_minutes=15):
     Правила:
     - stale 'assembling' -> принудительный release обратно в 'new',
       picker_id очищается; заказ снова доступен очереди;
+    - stale 'in_delivery' -> принудительный release обратно в
+      'awaiting_courier', courier_id очищается; заказ снова доступен
+      очереди курьеров;
     - stale 'new' / 'awaiting_courier' -> статус не меняется,
       выполняется только эскалация администратору;
     - каждый запуск возвращает только новые события таймаута для уведомления.
@@ -1467,9 +1471,10 @@ def process_order_timeouts(timeout_minutes=15):
                 o.client_name,
                 o.delivery_address,
                 o.status,
-                o.picker_id
+                o.picker_id,
+                o.courier_id
             FROM orders o
-            WHERE o.status IN ('new', 'assembling', 'awaiting_courier')
+            WHERE o.status IN ('new', 'assembling', 'awaiting_courier', 'in_delivery')
               AND o.updated_at <= datetime('now', '-' || ? || ' minutes')
               AND NOT EXISTS (
                   SELECT 1
@@ -1486,7 +1491,52 @@ def process_order_timeouts(timeout_minutes=15):
         events = []
 
         for order in orders:
-            if order["status"] == "assembling":
+            if order["status"] == "in_delivery":
+                cursor.execute(
+                    """
+                    UPDATE orders
+                    SET
+                        status = 'awaiting_courier',
+                        courier_id = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                      AND status = 'in_delivery'
+                    """,
+                    (order["id"],),
+                )
+                if cursor.rowcount != 1:
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO action_log (
+                        order_id, employee_id, action,
+                        old_status, new_status, details
+                    )
+                    VALUES (?, ?, 'timeout_requeue', 'in_delivery', 'awaiting_courier', ?)
+                    """,
+                    (
+                        order["id"],
+                        order["courier_id"],
+                        (
+                            "Принудительное освобождение: доставка превысила "
+                            f"таймаут {timeout_minutes} минут. "
+                            "Заказ возвращён в очередь курьеров."
+                        ),
+                    ),
+                )
+                events.append(
+                    {
+                        "order_id": order["id"],
+                        "order_number": order["order_number"],
+                        "client_name": order["client_name"],
+                        "delivery_address": order["delivery_address"],
+                        "status": "awaiting_courier",
+                        "action": "timeout_requeue",
+                        "previous_employee_id": order["courier_id"],
+                    }
+                )
+            elif order["status"] == "assembling":
                 cursor.execute(
                     """
                     UPDATE orders
@@ -2081,6 +2131,16 @@ def get_unnotified_courier_orders(employee_id):
                   WHERE al.order_id = o.id
                     AND al.employee_id = ?
                     AND al.action = 'courier_order_notification'
+                    AND al.id > COALESCE(
+                        (
+                            SELECT MAX(requeue.id)
+                            FROM action_log requeue
+                            WHERE requeue.order_id = o.id
+                              AND requeue.action = 'timeout_requeue'
+                              AND requeue.new_status = 'awaiting_courier'
+                        ),
+                        0
+                    )
               )
               AND NOT EXISTS (
                   SELECT 1
@@ -2744,6 +2804,142 @@ def get_rejected_orders():
                   FROM action_log al
                   WHERE al.order_id = o.id
                     AND al.action IN ('return_to_stock', 'write_off')
+              )
+            ORDER BY o.updated_at ASC
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def retry_rejected_order(order_id, admin_telegram_id=None):
+    """
+    Запускает отдельную повторную попытку доставки после возврата товара
+    на склад. Статус rejected -> awaiting_courier, courier_id очищается.
+    """
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+
+        cursor.execute(
+            "SELECT id, order_number, status, courier_id FROM orders WHERE id = ?",
+            (order_id,),
+        )
+        order = cursor.fetchone()
+
+        if order is None:
+            connection.rollback()
+            return {"success": False, "reason": "not_found"}
+
+        if order["status"] != "rejected":
+            connection.rollback()
+            return {"success": False, "reason": "wrong_status"}
+
+        resolved = cursor.execute(
+            """
+            SELECT action
+            FROM action_log
+            WHERE order_id = ?
+              AND action IN ('return_to_stock', 'write_off')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (order_id,),
+        ).fetchone()
+
+        if resolved is None:
+            connection.rollback()
+            return {"success": False, "reason": "resolution_required"}
+
+        if resolved["action"] != "return_to_stock":
+            connection.rollback()
+            return {"success": False, "reason": "written_off"}
+
+        already_retried = cursor.execute(
+            """
+            SELECT 1
+            FROM action_log
+            WHERE order_id = ?
+              AND action = 'retry_delivery'
+            """,
+            (order_id,),
+        ).fetchone()
+        if already_retried:
+            connection.rollback()
+            return {"success": False, "reason": "already_retried"}
+
+        cursor.execute(
+            """
+            UPDATE orders
+            SET
+                status = 'awaiting_courier',
+                courier_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND status = 'rejected'
+            """,
+            (order_id,),
+        )
+        if cursor.rowcount != 1:
+            connection.rollback()
+            return {"success": False, "reason": "update_failed"}
+
+        details = "Повторная доставка разрешена: заказ возвращён в очередь курьеров."
+        if admin_telegram_id is not None:
+            details += f" (Telegram ID администратора: {admin_telegram_id})"
+
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            VALUES (?, NULL, 'retry_delivery', 'rejected', 'awaiting_courier', ?)
+            """,
+            (order_id, details),
+        )
+
+        connection.commit()
+        return {
+            "success": True,
+            "order_number": order["order_number"],
+        }
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_retryable_rejected_orders():
+    """Возвращает отклонённые заказы, по которым разрешена повторная доставка."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                o.id,
+                o.order_number,
+                o.client_name,
+                o.updated_at
+            FROM orders o
+            WHERE o.status = 'rejected'
+              AND EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.action = 'return_to_stock'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.action IN ('write_off', 'retry_delivery')
               )
             ORDER BY o.updated_at ASC
             """
