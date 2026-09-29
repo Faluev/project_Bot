@@ -71,6 +71,14 @@ def get_work_menu(role, is_on_shift=False, language="ru"):
     return get_work_menu_expanded(role, is_on_shift, language)
 
 
+def get_admin_mode_menu():
+    """Меню выбора режима для администратора в боте сборщика."""
+    return ReplyKeyboardMarkup(
+        [["👨‍💼 Админка"], ["👷 Сборщик"]],
+        resize_keyboard=True,
+    )
+
+
 def get_registration_menu():
     """Стартовое меню для нового пользователя."""
     return ReplyKeyboardMarkup(
