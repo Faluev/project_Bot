@@ -1790,10 +1790,26 @@ def get_on_shift_couriers():
 
 
 def get_unnotified_courier_orders(employee_id):
+    """Возвращает только столько новых заказов, сколько помещается в загрузку."""
     connection = get_connection()
 
     try:
         cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS active_count
+            FROM orders
+            WHERE status = 'in_delivery'
+              AND courier_id = ?
+            """,
+            (employee_id,),
+        )
+        active_count = cursor.fetchone()["active_count"]
+        available_slots = max(0, MAX_COURIER_ACTIVE_ORDERS - active_count)
+
+        if available_slots == 0:
+            return []
+
         cursor.execute(
             """
             SELECT
@@ -1814,9 +1830,10 @@ def get_unnotified_courier_orders(employee_id):
                     AND al.employee_id = ?
                     AND al.action = 'courier_order_notification'
               )
-            ORDER BY o.updated_at ASC
+            ORDER BY o.updated_at ASC, o.created_at ASC
+            LIMIT ?
             """,
-            (employee_id,),
+            (employee_id, available_slots),
         )
         return cursor.fetchall()
     finally:
