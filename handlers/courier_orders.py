@@ -575,6 +575,9 @@ async def handle_deliver_order(
         "client_delivered",
     )
 
+    # Освободившееся место сразу заполняется следующим ожидающим заказом.
+    await notify_couriers_about_waiting_orders(context)
+
     await query.edit_message_text(
         get_message(
             employee["language"],
