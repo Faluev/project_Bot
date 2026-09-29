@@ -249,10 +249,19 @@ async def start_assembly(
     # Если назначить не получилось
     if not result["success"]:
 
+        error_message = _order_action_error(language, result["reason"])
         await query.answer(
-            _order_action_error(language, result["reason"]),
+            error_message,
             show_alert=True,
         )
+
+        # Если заказ уже взял другой сборщик, убираем кнопку
+        # из этого уведомления после первого неуспешного клика.
+        if result["reason"] == "already_taken":
+            try:
+                await query.edit_message_text(error_message)
+            except Exception:
+                pass
         return
 
     # Заказ успешно принят
