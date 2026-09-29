@@ -2248,6 +2248,62 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertIn("PICKER-LIVE-1", replies[1].args[0])
 
 
+    def test_picker_receives_next_order_automatically_after_completion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_auto_next.db"
+            database.init_database()
+
+            database.create_employee_application(
+                7401, "picker_auto", "Фарход", "Нуров", "+9927401", "picker"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES
+                    ('AUTO-1001', 'Клиент 1', 'new', '2026-09-29 12:00:00', '2026-09-29 12:00:00'),
+                    ('AUTO-1002', 'Клиент 2', 'new', '2026-09-29 12:01:00', '2026-09-29 12:01:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            started = database.start_order_assembly(1, 1)
+            self.assertTrue(started["success"])
+
+            completed = database.complete_order_assembly(1, 1)
+            self.assertTrue(completed["success"])
+
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(id=7401, language_code="ru"),
+                message=SimpleNamespace(reply_text=AsyncMock()),
+            )
+            context = SimpleNamespace(
+                bot=SimpleNamespace(
+                    send_message=AsyncMock(
+                        return_value=SimpleNamespace(message_id=555)
+                    )
+                ),
+                bot_data={"role": "picker"},
+                user_data={},
+            )
+
+            asyncio.run(
+                __import__("handlers.orders", fromlist=["notify_next_order_to_picker"])
+                .notify_next_order_to_picker(
+                    context,
+                    database.get_employee_by_telegram_id(7401, "picker"),
+                )
+            )
+
+            self.assertEqual(context.bot.send_message.await_count, 1)
+            sent_text = context.bot.send_message.await_args.kwargs["text"]
+            self.assertIn("AUTO-1002", sent_text)
+
     def test_picker_notification_message_ids_are_tracked_for_stale_cleanup(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/picker_notifications.db"
