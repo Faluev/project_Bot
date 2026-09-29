@@ -21,6 +21,9 @@ ORDER_STATUSES = {
 EMPLOYEE_ROLES = {"picker", "courier"}
 APPLICATION_STATUSES = {"pending", "approved", "rejected"}
 
+# Максимум заказов, которые курьер может одновременно везти.
+MAX_COURIER_ACTIVE_ORDERS = 2
+
 ORDER_STATUS_TRANSITIONS = {
     "new": {"assembling"},
     "assembling": {"awaiting_courier"},
@@ -665,6 +668,7 @@ def set_employee_access(employee_id, is_active):
 
 
 def get_new_orders():
+    """Возвращает только самый старый новый заказ в очереди."""
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -685,6 +689,7 @@ def get_new_orders():
         FROM orders
         WHERE status = 'new'
         ORDER BY created_at ASC
+        LIMIT 1
         """
     )
 
@@ -742,9 +747,16 @@ def get_unnotified_new_orders(employee_id):
                     AND al.employee_id = ?
                     AND al.action = 'new_order_notification'
               )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM orders active_order
+                  WHERE active_order.status = 'assembling'
+                    AND active_order.picker_id = ?
+              )
             ORDER BY o.created_at ASC
+            LIMIT 1
             """,
-            (employee_id,),
+            (employee_id, employee_id),
         )
         return cursor.fetchall()
     finally:
@@ -781,6 +793,70 @@ def log_new_order_notification(order_id, employee_id):
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
+
+
+def get_orders_for_picker(employee_id):
+    """
+    Возвращает один актуальный заказ для сборщика:
+    - если сборщик уже собирает заказ — только его текущий заказ;
+    - иначе — самый старый новый заказ из очереди.
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                order_number,
+                client_name,
+                client_phone,
+                client_telegram_id,
+                delivery_address,
+                client_comment,
+                payment_method,
+                payment_amount,
+                status,
+                picker_id,
+                created_at
+            FROM orders
+            WHERE status = 'assembling'
+              AND picker_id = ?
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (employee_id,),
+        )
+        current_order = cursor.fetchone()
+        if current_order is not None:
+            return [current_order]
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                order_number,
+                client_name,
+                client_phone,
+                client_telegram_id,
+                delivery_address,
+                client_comment,
+                payment_method,
+                payment_amount,
+                status,
+                picker_id,
+                created_at
+            FROM orders
+            WHERE status = 'new'
+            ORDER BY created_at ASC
+            LIMIT 1
+            """
+        )
+        order = cursor.fetchone()
+        return [order] if order is not None else []
     finally:
         connection.close()
 
@@ -1591,14 +1667,53 @@ def log_order_timeout_alert(order_id, status, timeout_minutes):
 
 def get_orders_for_courier(employee_id):
     """
-    Возвращает заказы, которые курьер может видеть:
-    - awaiting_courier — доступны для получения;
-    - in_delivery — только если уже закреплены за этим курьером.
+    Возвращает до двух заказов:
+    - уже взятые этим курьером;
+    - самые старые заказы, ожидающие курьера, пока не достигнут лимит 2.
+    Старший заказ всегда идёт первым.
     """
     connection = get_connection()
     cursor = connection.cursor()
 
     try:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS active_count
+            FROM orders
+            WHERE status = 'in_delivery'
+              AND courier_id = ?
+            """,
+            (employee_id,),
+        )
+        active_count = cursor.fetchone()["active_count"]
+        available_slots = max(0, MAX_COURIER_ACTIVE_ORDERS - active_count)
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                order_number,
+                client_name,
+                client_phone,
+                delivery_address,
+                client_comment,
+                payment_method,
+                payment_amount,
+                status,
+                courier_id,
+                created_at
+            FROM orders
+            WHERE status = 'in_delivery'
+              AND courier_id = ?
+            ORDER BY created_at ASC
+            """,
+            (employee_id,),
+        )
+        active_orders = cursor.fetchall()
+
+        if available_slots == 0:
+            return active_orders
+
         cursor.execute(
             """
             SELECT
@@ -1615,14 +1730,12 @@ def get_orders_for_courier(employee_id):
                 created_at
             FROM orders
             WHERE status = 'awaiting_courier'
-               OR (status = 'in_delivery' AND courier_id = ?)
-            ORDER BY
-                CASE WHEN status = 'in_delivery' THEN 0 ELSE 1 END,
-                created_at ASC
+            ORDER BY created_at ASC
+            LIMIT ?
             """,
-            (employee_id,),
+            (available_slots,),
         )
-        return cursor.fetchall()
+        return active_orders + cursor.fetchall()
     finally:
         connection.close()
 
@@ -1969,6 +2082,23 @@ def pickup_order(order_id, employee_id):
                 "reason": "not_found",
             }
 
+        # Курьер может одновременно везти не более двух заказов.
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS active_count
+            FROM orders
+            WHERE status = 'in_delivery'
+              AND courier_id = ?
+            """,
+            (employee_id,),
+        )
+        if cursor.fetchone()["active_count"] >= MAX_COURIER_ACTIVE_ORDERS:
+            connection.rollback()
+            return {
+                "success": False,
+                "reason": "capacity_reached",
+            }
+
         # Заказ должен ждать курьера
         if not is_valid_order_transition(order["status"], "in_delivery"):
             connection.rollback()
@@ -2086,6 +2216,28 @@ def deliver_order(order_id, employee_id):
         if order["courier_id"] != employee_id:
             connection.rollback()
             return {"success": False, "reason": "not_courier"}
+
+        # Доставка идёт строго по очереди: сначала самый старый
+        # заказ из текущей загрузки курьера.
+        cursor.execute(
+            """
+            SELECT id, order_number
+            FROM orders
+            WHERE status = 'in_delivery'
+              AND courier_id = ?
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (employee_id,),
+        )
+        priority_order = cursor.fetchone()
+        if priority_order is not None and priority_order["id"] != order_id:
+            connection.rollback()
+            return {
+                "success": False,
+                "reason": "priority_order",
+                "priority_order_number": priority_order["order_number"],
+            }
 
         cursor.execute(
             """
