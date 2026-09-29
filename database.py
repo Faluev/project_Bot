@@ -1763,10 +1763,10 @@ def log_order_timeout_alert(order_id, status, timeout_minutes):
 
 def get_orders_for_courier(employee_id):
     """
-    Возвращает до двух заказов:
-    - уже взятые этим курьером;
-    - самые старые заказы, ожидающие курьера, пока не достигнут лимит 2.
-    Старший заказ всегда идёт первым.
+    Возвращает рабочую очередь курьера:
+    - сначала уже взятые этим курьером заказы, от старого к новому;
+    - затем самые старые ожидающие заказы в свободные слоты.
+    Новые заказы не выдаются, пока у курьера остаётся хотя бы один ранее взятый заказ.
     """
     connection = get_connection()
     cursor = connection.cursor()
@@ -1926,10 +1926,16 @@ def get_unnotified_courier_orders(employee_id):
                     AND al.employee_id = ?
                     AND al.action = 'courier_order_notification'
               )
-            ORDER BY o.updated_at ASC, o.created_at ASC
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM orders assigned_order
+                  WHERE assigned_order.status = 'in_delivery'
+                    AND assigned_order.courier_id = ?
+              )
+            ORDER BY o.created_at ASC, o.id ASC
             LIMIT ?
             """,
-            (employee_id, available_slots),
+            (employee_id, employee_id, available_slots),
         )
         return cursor.fetchall()
     finally:
