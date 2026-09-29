@@ -574,7 +574,8 @@ async def handle_deliver_order(
         "client_delivered",
     )
 
-    # Освободившееся место сразу заполняется следующим ожидающим заказом.
+    # Новый заказ выдаём только после завершения всех ранее взятых
+    # этим курьером заказов. Это обязательное правило очереди.
     await notify_couriers_about_waiting_orders(context)
 
     await query.edit_message_text(
