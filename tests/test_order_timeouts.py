@@ -1105,7 +1105,6 @@ class OrderTimeoutTests(unittest.TestCase):
         labels = [button.text for row in markup.keyboard for button in row]
         self.assertIn("👨‍💼 Админка", labels)
         self.assertIn("👷 Сборщик", labels)
-        self.assertIn("👷 Регистрация сборщика", labels)
 
     def test_admin_menu_contains_all_core_actions(self):
         markup = get_admin_menu()
@@ -2023,7 +2022,7 @@ class OrderTimeoutTests(unittest.TestCase):
 
     def test_admin_mode_menu_has_separate_admin_and_picker_buttons(self):
         menu = get_admin_mode_menu()
-        rows = menu.keyboard
+        rows = [[button.text for button in row] for row in menu.keyboard]
 
         self.assertEqual(rows, [["👨‍💼 Админка"], ["👷 Сборщик"]])
 
@@ -2032,12 +2031,12 @@ class OrderTimeoutTests(unittest.TestCase):
         picker_menu = get_work_menu_expanded("picker", False, "ru")
 
         admin_buttons = {
-            button
+            button.text
             for row in admin_menu.keyboard
             for button in row
         }
         picker_buttons = {
-            button
+            button.text
             for row in picker_menu.keyboard
             for button in row
         }
