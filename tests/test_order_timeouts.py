@@ -150,6 +150,16 @@ class OrderTimeoutTests(unittest.TestCase):
     def test_translation_catalogs_have_matching_keys(self):
         self.assertEqual(set(MESSAGES["ru"]), set(MESSAGES["tg"]))
 
+    def test_not_oldest_message_explains_blocking_order(self):
+        self.assertIn(
+            "TEST-OLDER",
+            MESSAGES["ru"]["not_oldest_with_number"].format(order_number="TEST-OLDER"),
+        )
+        self.assertIn(
+            "TEST-OLDER",
+            MESSAGES["tg"]["not_oldest_with_number"].format(order_number="TEST-OLDER"),
+        )
+
     def test_get_order_timeouts_detects_stale_orders(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = f"{temp_dir}/test_delivery.db"
