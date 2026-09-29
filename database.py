@@ -2813,6 +2813,142 @@ def get_rejected_orders():
         connection.close()
 
 
+def retry_rejected_order(order_id, admin_telegram_id=None):
+    """
+    Запускает отдельную повторную попытку доставки после возврата товара
+    на склад. Статус rejected -> awaiting_courier, courier_id очищается.
+    """
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+
+        cursor.execute(
+            "SELECT id, order_number, status, courier_id FROM orders WHERE id = ?",
+            (order_id,),
+        )
+        order = cursor.fetchone()
+
+        if order is None:
+            connection.rollback()
+            return {"success": False, "reason": "not_found"}
+
+        if order["status"] != "rejected":
+            connection.rollback()
+            return {"success": False, "reason": "wrong_status"}
+
+        resolved = cursor.execute(
+            """
+            SELECT action
+            FROM action_log
+            WHERE order_id = ?
+              AND action IN ('return_to_stock', 'write_off')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (order_id,),
+        ).fetchone()
+
+        if resolved is None:
+            connection.rollback()
+            return {"success": False, "reason": "resolution_required"}
+
+        if resolved["action"] != "return_to_stock":
+            connection.rollback()
+            return {"success": False, "reason": "written_off"}
+
+        already_retried = cursor.execute(
+            """
+            SELECT 1
+            FROM action_log
+            WHERE order_id = ?
+              AND action = 'retry_delivery'
+            """,
+            (order_id,),
+        ).fetchone()
+        if already_retried:
+            connection.rollback()
+            return {"success": False, "reason": "already_retried"}
+
+        cursor.execute(
+            """
+            UPDATE orders
+            SET
+                status = 'awaiting_courier',
+                courier_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND status = 'rejected'
+            """,
+            (order_id,),
+        )
+        if cursor.rowcount != 1:
+            connection.rollback()
+            return {"success": False, "reason": "update_failed"}
+
+        details = "Повторная доставка разрешена: заказ возвращён в очередь курьеров."
+        if admin_telegram_id is not None:
+            details += f" (Telegram ID администратора: {admin_telegram_id})"
+
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            VALUES (?, NULL, 'retry_delivery', 'rejected', 'awaiting_courier', ?)
+            """,
+            (order_id, details),
+        )
+
+        connection.commit()
+        return {
+            "success": True,
+            "order_number": order["order_number"],
+        }
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_retryable_rejected_orders():
+    """Возвращает отклонённые заказы, по которым разрешена повторная доставка."""
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                o.id,
+                o.order_number,
+                o.client_name,
+                o.updated_at
+            FROM orders o
+            WHERE o.status = 'rejected'
+              AND EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.action = 'return_to_stock'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM action_log al
+                  WHERE al.order_id = o.id
+                    AND al.action IN ('write_off', 'retry_delivery')
+              )
+            ORDER BY o.updated_at ASC
+            """
+        )
+        return cursor.fetchall()
+    finally:
+        connection.close()
+
+
 def resolve_rejected_order(order_id, resolution, admin_telegram_id=None):
     """Фиксирует решение админа по товарам отклонённого заказа."""
     if resolution not in ("return_to_stock", "write_off"):
