@@ -167,7 +167,7 @@ application.add_handler(courier_registration_handler)
 application.add_handler(
     CallbackQueryHandler(
         process_application,
-        pattern=r"^(approve|reject):\\d+$",
+        pattern=r"^(approve|reject):\d+$",
     )
 )
 
