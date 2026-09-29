@@ -2193,6 +2193,30 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual([row["order_number"] for row in visible], ["FIFO-2"])
 
     
+    def test_courier_notification_bot_is_cached_between_calls(self):
+        from handlers import courier_orders
+
+        courier_orders._courier_notification_bot = None
+
+        class FakeBot:
+            def __init__(self, token):
+                self.token = token
+            async def initialize(self):
+                return None
+
+        original_bot = courier_orders.Bot
+        try:
+            courier_orders.Bot = FakeBot
+
+            first = asyncio.run(courier_orders._get_courier_notification_bot())
+            second = asyncio.run(courier_orders._get_courier_notification_bot())
+
+            self.assertIs(first, second)
+            self.assertEqual(first.token, courier_orders.COURIER_BOT_TOKEN)
+        finally:
+            courier_orders.Bot = original_bot
+            courier_orders._courier_notification_bot = None
+
     def test_courier_notification_helper_uses_courier_bot_token(self):
         from handlers import courier_orders
 
