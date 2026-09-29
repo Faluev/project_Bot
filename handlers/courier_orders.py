@@ -19,6 +19,7 @@ from database import (
     get_on_shift_couriers,
     get_unnotified_courier_orders,
     log_courier_order_notification,
+    get_courier_order_notification_messages,
 )
 from handlers.i18n import get_message
 from handlers.retry import send_message_with_retry
@@ -78,6 +79,25 @@ def build_client_contact_message(order, custom_message):
     )
 
 
+async def clear_stale_courier_order_messages(context, order_id, employee_id):
+    """Удаляет старые уведомления о заказе у других курьеров после его взятия."""
+    for item in get_courier_order_notification_messages(
+        order_id,
+        exclude_employee_id=employee_id,
+    ):
+        try:
+            await context.bot.delete_message(
+                chat_id=item["telegram_id"],
+                message_id=item["message_id"],
+            )
+        except Exception:
+            logger.debug(
+                "Could not remove stale courier notification for order %s",
+                order_id,
+                exc_info=True,
+            )
+
+
 async def notify_couriers_about_waiting_orders(
     context: ContextTypes.DEFAULT_TYPE,
 ):
@@ -109,7 +129,7 @@ async def notify_couriers_about_waiting_orders(
             ]])
 
             try:
-                await send_message_with_retry(
+                sent_message = await send_message_with_retry(
                     context.bot,
                     chat_id=employee["telegram_id"],
                     text=text,
@@ -118,7 +138,11 @@ async def notify_couriers_about_waiting_orders(
             except Exception:
                 continue
 
-            log_courier_order_notification(order["id"], employee["id"])
+            log_courier_order_notification(
+                order["id"],
+                employee["id"],
+                getattr(sent_message, "message_id", None),
+            )
 
 
 async def show_courier_shift_report(
@@ -326,6 +350,11 @@ async def handle_pickup_order(
         order_id,
         employee["language"],
         "client_in_delivery",
+    )
+    await clear_stale_courier_order_messages(
+        context,
+        order_id,
+        employee["id"],
     )
     await notify_couriers_about_waiting_orders(context)
     delivery_keyboard = [[
