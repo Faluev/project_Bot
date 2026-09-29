@@ -18,6 +18,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 import json
 
 from dotenv import load_dotenv
@@ -30,8 +31,19 @@ load_dotenv(os.path.join(ROOT, ".env"))
 def telegram_request(token: str, method: str, **params):
     url = f"https://api.telegram.org/bot{token}/{method}"
     data = urllib.parse.urlencode(params).encode()
-    with urllib.request.urlopen(url, data=data, timeout=15) as response:
-        payload = json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=15) as response:
+            payload = json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = body
+        raise RuntimeError(
+            f"Telegram {method} failed with HTTP {exc.code}: {payload}"
+        ) from exc
+
     if not payload.get("ok"):
         raise RuntimeError(f"Telegram {method} failed: {payload}")
     return payload["result"]
