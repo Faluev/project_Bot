@@ -60,6 +60,7 @@ def _order_action_error(language, reason):
         "already_taken": "order_taken",
         "not_picker": "not_assigned_picker",
         "wrong_status": "wrong_assembly_status",
+        "not_oldest": "not_oldest",
         "not_approved": "not_approved",
         "inactive": "access_disabled",
         "off_shift": "start_shift",
