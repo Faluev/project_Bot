@@ -1721,5 +1721,103 @@ class OrderTimeoutTests(unittest.TestCase):
                 "invalid_transport",
             )
 
+
+    def test_picker_queue_shows_one_order_and_moves_to_next_after_claim_and_completion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/picker_queue.db"
+            database.init_database()
+
+            database.create_employee_application(
+                5001, "ali", "Али", "Сборщик", "+9925001", "picker"
+            )
+            database.create_employee_application(
+                5002, "ivan", "Иван", "Сборщик", "+9925002", "picker"
+            )
+            database.update_application_status(1, "approved")
+            database.update_application_status(2, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES
+                    ('QUEUE-1', 'Клиент 1', 'new', '2026-09-29 10:10:00', '2026-09-29 10:10:00'),
+                    ('QUEUE-2', 'Клиент 2', 'new', '2026-09-29 10:15:00', '2026-09-29 10:15:00'),
+                    ('QUEUE-3', 'Клиент 3', 'new', '2026-09-29 10:20:00', '2026-09-29 10:20:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertEqual(database.get_orders_for_picker(1)[0]["order_number"], "QUEUE-1")
+            self.assertEqual(database.get_orders_for_picker(2)[0]["order_number"], "QUEUE-1")
+
+            self.assertTrue(database.start_order_assembly(1, 1)["success"])
+
+            self.assertEqual(database.get_orders_for_picker(1)[0]["order_number"], "QUEUE-1")
+            self.assertEqual(database.get_orders_for_picker(2)[0]["order_number"], "QUEUE-2")
+
+            self.assertTrue(database.complete_order_assembly(1, 1)["success"])
+
+            self.assertEqual(database.get_orders_for_picker(1)[0]["order_number"], "QUEUE-2")
+            self.assertEqual(database.get_orders_for_picker(2)[0]["order_number"], "QUEUE-2")
+
+    def test_courier_can_take_two_orders_and_must_deliver_oldest_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/courier_capacity.db"
+            database.init_database()
+
+            database.create_employee_application(
+                6001, "courier", "Курьер", "Тестовый", "+9926001", "courier", "car"
+            )
+            database.update_application_status(1, "approved")
+
+            connection = sqlite3.connect(database.DATABASE_PATH)
+            connection.execute("UPDATE employees SET is_on_shift = 1 WHERE id = 1")
+            connection.execute(
+                """
+                INSERT INTO orders (
+                    order_number, client_name, status, created_at, updated_at
+                ) VALUES
+                    ('COURIER-1', 'Клиент 1', 'awaiting_courier', '2026-09-29 10:10:00', '2026-09-29 10:10:00'),
+                    ('COURIER-2', 'Клиент 2', 'awaiting_courier', '2026-09-29 10:15:00', '2026-09-29 10:15:00'),
+                    ('COURIER-3', 'Клиент 3', 'awaiting_courier', '2026-09-29 10:20:00', '2026-09-29 10:20:00')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            visible = database.get_orders_for_courier(1)
+            self.assertEqual(
+                [order["order_number"] for order in visible],
+                ["COURIER-1", "COURIER-2"],
+            )
+
+            self.assertTrue(database.pickup_order(1, 1)["success"])
+            visible = database.get_orders_for_courier(1)
+            self.assertEqual(
+                [order["order_number"] for order in visible],
+                ["COURIER-1", "COURIER-2"],
+            )
+
+            self.assertTrue(database.pickup_order(2, 1)["success"])
+            visible = database.get_orders_for_courier(1)
+            self.assertEqual(
+                [order["order_number"] for order in visible],
+                ["COURIER-1", "COURIER-2"],
+            )
+
+            second_first = database.deliver_order(2, 1)
+            self.assertFalse(second_first["success"])
+            self.assertEqual(second_first["reason"], "priority_order")
+            self.assertEqual(second_first["priority_order_number"], "COURIER-1")
+
+            self.assertTrue(database.deliver_order(1, 1)["success"])
+            self.assertTrue(database.deliver_order(2, 1)["success"])
+
+            self.assertEqual(database.get_orders_for_courier(1), [])
+
 if __name__ == "__main__":
     unittest.main()
