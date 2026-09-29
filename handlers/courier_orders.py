@@ -592,6 +592,10 @@ async def handle_reject_reason(
         await query.answer(get_message(language, "access_disabled"), show_alert=True)
         return
 
+    if employee["is_on_shift"] != 1:
+        await query.answer(get_message(language, "start_shift"), show_alert=True)
+        return
+
     if employee["role"] != "courier":
         await query.answer(get_message(language, "wrong_role"), show_alert=True)
         return
@@ -669,6 +673,17 @@ async def save_custom_rejection_reason(
 
     if employee is None or not order_id:
         await update.message.reply_text("⚠️ Не найдена активная заявка на отказ.")
+        return ConversationHandler.END
+
+    if (
+        employee["application_status"] != "approved"
+        or employee["is_active"] != 1
+        or employee["is_on_shift"] != 1
+        or employee["role"] != "courier"
+    ):
+        await update.message.reply_text(
+            get_message(employee["language"], "start_shift")
+        )
         return ConversationHandler.END
 
     if not reason:
