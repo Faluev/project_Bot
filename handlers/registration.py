@@ -121,16 +121,18 @@ async def start_registration(
     # В боте сборщика администратор сначала выбирает режим:
     # отдельная кнопка для админки и отдельная кнопка для работы сборщиком.
     if telegram_id == ADMIN_TELEGRAM_ID:
-        if update.message.text in ("/start", "👨‍💼 Админка"):
+        if update.message.text == "/start":
             await update.message.reply_text(
                 "👤 Выберите режим работы:",
                 reply_markup=get_admin_mode_menu(),
             )
-            if update.message.text == "👨‍💼 Админка":
-                await update.message.reply_text(
-                    "👨‍💼 Панель администратора готова.",
-                    reply_markup=get_admin_menu(),
-                )
+            return ConversationHandler.END
+
+        if update.message.text == "👨‍💼 Админка":
+            await update.message.reply_text(
+                "👨‍💼 Панель администратора готова.",
+                reply_markup=get_admin_menu(),
+            )
             return ConversationHandler.END
 
         if update.message.text not in ("👷 Сборщик", "👷 Регистрация сборщика"):
