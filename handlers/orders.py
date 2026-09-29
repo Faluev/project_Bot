@@ -19,12 +19,33 @@ from database import (
     get_on_shift_pickers,
     get_unnotified_new_orders,
     log_new_order_notification,
+    get_picker_order_notification_messages,
 )
 from handlers.i18n import get_message
 from handlers.retry import send_message_with_retry
 from handlers.courier_orders import notify_couriers_about_waiting_orders
 
 MISSING_ITEM = 5
+
+
+async def clear_stale_picker_order_messages(
+    context: ContextTypes.DEFAULT_TYPE,
+    order_id,
+    employee_id,
+):
+    """Удаляет устаревшие уведомления этого заказа у других сборщиков."""
+    for item in get_picker_order_notification_messages(
+        order_id,
+        exclude_employee_id=employee_id,
+    ):
+        try:
+            await context.bot.delete_message(
+                chat_id=item["telegram_id"],
+                message_id=item["message_id"],
+            )
+        except Exception:
+            # Уведомление могло уже быть удалено или стать недоступным.
+            continue
 
 
 def _employee_language(employee, user):
@@ -198,7 +219,7 @@ async def notify_pickers_about_new_orders(
             ])
 
             try:
-                await send_message_with_retry(
+                sent_message = await send_message_with_retry(
                     context.bot,
                     chat_id=employee["telegram_id"],
                     text=message,
@@ -207,7 +228,11 @@ async def notify_pickers_about_new_orders(
             except Exception:
                 continue
 
-            log_new_order_notification(order["id"], employee["id"])
+            log_new_order_notification(
+                order["id"],
+                employee["id"],
+                getattr(sent_message, "message_id", None),
+            )
 
 
 # ==========================================
@@ -283,8 +308,9 @@ async def start_assembly(
                 pass
         return
 
-    # После того как один сборщик взял заказ, сразу обновляем очередь
-    # остальных сборщиков: им отправляется следующий старый заказ.
+    # Убираем устаревшие карточки этого заказа у остальных сборщиков,
+    # затем сразу выдаём им следующий самый старый доступный заказ.
+    await clear_stale_picker_order_messages(context, order_id, employee["id"])
     await notify_pickers_about_new_orders(context)
 
     # Заказ успешно принят
