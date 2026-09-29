@@ -419,6 +419,10 @@ async def complete_assembly(
     # Сборка успешно завершена
     order_number = result["order_number"]
 
+    # Освобождённый сборщик сразу получает следующий старый заказ.
+    # Остальные сборщики также получают актуальную очередь без ожидания фонового job.
+    await notify_pickers_about_new_orders(context)
+
     # Передаём заказ курьерам сразу после завершения сборки.
     # Фоновый job остаётся резервным механизмом доставки уведомления.
     await notify_couriers_about_waiting_orders(context)
