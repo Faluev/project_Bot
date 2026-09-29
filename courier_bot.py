@@ -59,6 +59,7 @@ from handlers.courier_orders import (
 from handlers.shift import toggle_shift
 from handlers.language import toggle_language
 from handlers.i18n import get_message
+from handlers.admin import process_application
 
 
 async def start(
@@ -112,9 +113,10 @@ async def start(
 
 async def setup_courier_bot_commands(application):
     """Настраивает команды Telegram для курьера."""
+    # /cancel остаётся рабочей fallback-командой во время диалога,
+    # но не показывается постоянно в меню Telegram.
     await application.bot.set_my_commands([
         BotCommand("start", "Начать работу или регистрацию"),
-        BotCommand("cancel", "Отменить текущий диалог"),
     ])
 
 
@@ -159,6 +161,15 @@ application.add_handler(
 
 
 application.add_handler(courier_registration_handler)
+
+# Заявки сотрудника могут приходить администратору в чат курьерского бота
+# от старых уведомлений. Оставляем обработчик approve/reject для совместимости.
+application.add_handler(
+    CallbackQueryHandler(
+        process_application,
+        pattern=r"^(approve|reject):\\d+$",
+    )
+)
 
 admin_contact_handler = ConversationHandler(
     entry_points=[
