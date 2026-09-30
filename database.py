@@ -777,6 +777,96 @@ def get_unnotified_new_orders(employee_id):
         connection.close()
 
 
+def claim_new_order_notification(order_id, employee_id):
+    """Атомарно резервирует уведомление сборщику до отправки Telegram-сообщения."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            SELECT ?, ?, 'new_order_notification',
+                   'new', 'new', 'pending'
+            WHERE EXISTS (
+                SELECT 1 FROM orders
+                WHERE id = ? AND status = 'new'
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'new_order_notification'
+            )
+            """,
+            (order_id, employee_id, order_id, order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def finalize_new_order_notification(order_id, employee_id, message_id):
+    if not isinstance(message_id, int):
+        return False
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE action_log
+            SET details = ?
+            WHERE id = (
+                SELECT id
+                FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'new_order_notification'
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (f"Новый заказ отправлен сборщику;message_id:{message_id}", order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    finally:
+        connection.close()
+
+
+def release_new_order_notification_claim(order_id, employee_id):
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            DELETE FROM action_log
+            WHERE id = (
+                SELECT id
+                FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'new_order_notification'
+                  AND details = 'pending'
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    finally:
+        connection.close()
+
+
 def log_new_order_notification(order_id, employee_id, message_id=None):
     """Фиксирует отправку нового заказа конкретному сборщику."""
     connection = get_connection()
@@ -2030,6 +2120,96 @@ def get_unnotified_courier_orders(employee_id):
             (employee_id, employee_id, available_slots),
         )
         return cursor.fetchall()
+    finally:
+        connection.close()
+
+
+def claim_courier_order_notification(order_id, employee_id):
+    """Атомарно резервирует уведомление курьеру до отправки Telegram-сообщения."""
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        connection.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            INSERT INTO action_log (
+                order_id, employee_id, action,
+                old_status, new_status, details
+            )
+            SELECT ?, ?, 'courier_order_notification',
+                   'awaiting_courier', 'awaiting_courier', 'pending'
+            WHERE EXISTS (
+                SELECT 1 FROM orders
+                WHERE id = ? AND status = 'awaiting_courier'
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'courier_order_notification'
+            )
+            """,
+            (order_id, employee_id, order_id, order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def finalize_courier_order_notification(order_id, employee_id, message_id):
+    if not isinstance(message_id, int):
+        return False
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE action_log
+            SET details = ?
+            WHERE id = (
+                SELECT id
+                FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'courier_order_notification'
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (f"Заказ отправлен курьеру;message_id:{message_id}", order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    finally:
+        connection.close()
+
+
+def release_courier_order_notification_claim(order_id, employee_id):
+    connection = get_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            DELETE FROM action_log
+            WHERE id = (
+                SELECT id
+                FROM action_log
+                WHERE order_id = ?
+                  AND employee_id = ?
+                  AND action = 'courier_order_notification'
+                  AND details = 'pending'
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (order_id, employee_id),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
     finally:
         connection.close()
 
