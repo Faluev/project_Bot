@@ -131,7 +131,9 @@ def seed(reset=False):
                 connection.execute(f"DELETE FROM order_items WHERE order_id IN ({placeholders})", ids)
                 connection.execute(f"DELETE FROM orders WHERE id IN ({placeholders})", ids)
 
-        base_time = datetime.now().replace(microsecond=0)
+        # Фикстуры идут от самого старого к самому новому заказу:
+        # E2E-REAL-001 оформлен раньше E2E-REAL-010.
+        base_time = (datetime.now() - timedelta(minutes=len(ORDERS) - 1)).replace(microsecond=0)
         created = 0
         for index, order in enumerate(ORDERS):
             existing = connection.execute(
@@ -172,8 +174,8 @@ def seed(reset=False):
         connection.close()
 
     print(f"E2E REAL ORDERS CREATED: {created}")
-    print("Order queue: E2E-REAL-001 ... E2E-REAL-010")
-    print("Each order contains client, phone, address, comment, payment, amount and products.")
+    print("Order queue: E2E-REAL-001 ... E2E-REAL-010 (oldest -> newest)")
+    print("Each order contains client, phone, address, created time, comment, payment, amount and products.")
 
 
 if __name__ == "__main__":
