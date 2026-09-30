@@ -2455,6 +2455,8 @@ def deliver_order(order_id, employee_id):
         raise
 
     finally:
+        if cursor is not None:
+            cursor.close()
         connection.close()
 
 
