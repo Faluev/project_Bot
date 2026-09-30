@@ -12,12 +12,12 @@ os.environ.setdefault("ADMIN_TELEGRAM_ID", "999999999")
 
 import database
 from handlers import orders
-from handlers.menu import get_work_menu, get_work_menu_expanded
+from handlers.menu import get_work_menu_compact, get_work_menu_expanded
 
 
 class PickerUxTests(unittest.TestCase):
     def test_work_menu_is_compact(self):
-        menu = get_work_menu("picker", True, "ru")
+        menu = get_work_menu_compact("picker", True, "ru")
         self.assertEqual(menu.keyboard, [["☰ Меню"]])
 
     def test_expanded_work_menu_keeps_actions(self):
