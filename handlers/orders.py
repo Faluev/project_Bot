@@ -576,16 +576,109 @@ async def complete_assembly(
     )
 
 
+async def _render_picker_order_message(order, employee, suffix=True):
+    """Собирает актуальную карточку заказа сборщика."""
+    items = get_order_items(order["id"])
+    item_lines = []
+    for item in items:
+        remaining = item["quantity"] - item["missing_quantity"]
+        if remaining <= 0:
+            continue
+        if item["missing_quantity"]:
+            item_lines.append(
+                f"• {item['product_name']} — {remaining} шт. "
+                f"(из {item['quantity']}; нет {item['missing_quantity']})"
+            )
+        else:
+            item_lines.append(
+                f"• {item['product_name']} — {item['quantity']} шт."
+            )
+    item_text = "\n".join(item_lines) or "—"
+    payment_text = (
+        "Наличные"
+        if order["payment_method"] == "cash"
+        else order["payment_method"]
+    )
+    message = get_message(
+        employee["language"],
+        "picker_order",
+        order_number=order["order_number"],
+        client=order["client_name"],
+        phone=order["client_phone"],
+        address=order["delivery_address"],
+        items=item_text,
+        comment=(
+            f"\n💬 Комментарий клиента:\n{order['client_comment']}\n"
+            if order["client_comment"]
+            else ""
+        ),
+        payment=payment_text,
+        amount=order["payment_amount"],
+        created_at=order["created_at"],
+    )
+    if suffix:
+        message += "\n" + get_message(
+            employee["language"],
+            "assembly_started_suffix",
+        )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            get_message(employee["language"], "complete_button"),
+            callback_data=f"complete_assembly:{order['id']}",
+        ),
+        InlineKeyboardButton(
+            get_message(employee["language"], "missing_button"),
+            callback_data=f"missing_item:{order['id']}",
+        ),
+    ]])
+    return message, keyboard
+
+
+def _missing_item_keyboard(order_id, item_id, remaining_quantity):
+    buttons = []
+    if remaining_quantity <= 20:
+        for quantity in range(1, remaining_quantity + 1):
+            buttons.append(
+                InlineKeyboardButton(
+                    f"{quantity} шт.",
+                    callback_data=f"missing_item_qty:{order_id}:{item_id}:{quantity}",
+                )
+            )
+    else:
+        for quantity in range(1, 11):
+            buttons.append(
+                InlineKeyboardButton(
+                    f"{quantity} шт.",
+                    callback_data=f"missing_item_qty:{order_id}:{item_id}:{quantity}",
+                )
+            )
+        buttons.append(
+            InlineKeyboardButton(
+                f"Все {remaining_quantity} шт.",
+                callback_data=(
+                    f"missing_item_qty:{order_id}:{item_id}:{remaining_quantity}"
+                ),
+            )
+        )
+
+    rows = [buttons[index:index + 5] for index in range(0, len(buttons), 5)]
+    rows.append([
+        InlineKeyboardButton(
+            "↩️ Назад к товарам",
+            callback_data=f"missing_item_back_to_items:{order_id}",
+        )
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 async def handle_missing_item(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """Показывает кнопки конкретных позиций заказа для отметки отсутствия."""
+    """Показывает только ещё не обработанные позиции заказа."""
     query = update.callback_query
     employee = get_current_employee(update, context)
     language = _employee_language(employee, query.from_user)
-
-    # Сразу закрываем Telegram progress indicator; затем выполняем DB-проверки.
     await query.answer()
 
     if employee is None:
@@ -615,29 +708,48 @@ async def handle_missing_item(
         return
 
     order = get_order_by_id(order_id)
-    if order is None or order["status"] != "assembling" or order["picker_id"] != employee["id"]:
+    if (
+        order is None
+        or order["status"] != "assembling"
+        or order["picker_id"] != employee["id"]
+    ):
         await query.edit_message_text(get_message(language, "wrong_assembly_status"))
         return
 
-    items = get_order_items(order_id)
+    items = [
+        item
+        for item in get_order_items(order_id)
+        if item["quantity"] - item["missing_quantity"] > 0
+    ]
+
     if not items:
-        await query.edit_message_text("В заказе нет позиций.")
+        await query.edit_message_text(
+            get_message(
+                employee["language"],
+                "missing_all_items_recorded",
+                order_number=order["order_number"],
+            ),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    get_message(employee["language"], "complete_button"),
+                    callback_data=f"complete_assembly:{order_id}",
+                )
+            ]]),
+        )
         return
 
     keyboard = []
     for item in items:
-        keyboard.append([
-            InlineKeyboardButton(
-                f"❌ {item['product_name']} — {item['quantity']} шт.",
-                callback_data=f"missing_item_select:{order_id}:{item['id']}",
-            )
-        ])
-    keyboard.append([
-        InlineKeyboardButton(
-            "↩️ Назад к заказу",
-            callback_data=f"missing_item_back:{order_id}",
-        )
-    ])
+        remaining = item["quantity"] - item["missing_quantity"]
+        label = f"❌ {item['product_name']} — {remaining} шт."
+        keyboard.append([InlineKeyboardButton(
+            label,
+            callback_data=f"missing_item_select:{order_id}:{item['id']}",
+        )])
+    keyboard.append([InlineKeyboardButton(
+        "↩️ Назад к заказу",
+        callback_data=f"missing_item_back:{order_id}",
+    )])
 
     await query.edit_message_text(
         get_message(
@@ -653,12 +765,10 @@ async def select_missing_item(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """Фиксирует отсутствие конкретной позиции из заказа."""
+    """Показывает выбор количества отсутствующих единиц конкретной позиции."""
     query = update.callback_query
     employee = get_current_employee(update, context)
     language = _employee_language(employee, query.from_user)
-
-    # Убираем индикатор загрузки до обращения к БД.
     await query.answer()
 
     if employee is None or employee["application_status"] != "approved":
@@ -683,38 +793,195 @@ async def select_missing_item(
         return
 
     order = get_order_by_id(order_id)
-    if order is None or order["status"] != "assembling" or order["picker_id"] != employee["id"]:
+    if (
+        order is None
+        or order["status"] != "assembling"
+        or order["picker_id"] != employee["id"]
+    ):
         await query.edit_message_text(get_message(language, "wrong_assembly_status"))
         return
 
-    item = next((row for row in get_order_items(order_id) if row["id"] == item_id), None)
+    item = next(
+        (row for row in get_order_items(order_id) if row["id"] == item_id),
+        None,
+    )
     if item is None:
         await query.edit_message_text(get_message(language, "missing_item_not_found"))
         return
 
-    result = mark_order_missing_item(order_id, employee["id"], item["product_name"])
-    if not result["success"]:
-        await query.edit_message_text(get_message(language, "stale_missing_item"))
+    remaining = item["quantity"] - item["missing_quantity"]
+    if remaining <= 0:
+        await query.edit_message_text(
+            get_message(employee["language"], "missing_item_not_found")
+        )
         return
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            get_message(employee["language"], "complete_button"),
-            callback_data=f"complete_assembly:{order_id}",
-        )],
-        [InlineKeyboardButton(
-            get_message(employee["language"], "missing_button"),
-            callback_data=f"missing_item:{order_id}",
-        )],
-    ])
+    await query.edit_message_text(
+        get_message(
+            employee["language"],
+            "missing_item_quantity",
+            item_name=item["product_name"],
+            remaining_quantity=remaining,
+        ),
+        reply_markup=_missing_item_keyboard(
+            order_id,
+            item_id,
+            remaining,
+        ),
+    )
+
+
+async def confirm_missing_item_quantity(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Сохраняет выбранное количество отсутствующих единиц."""
+    query = update.callback_query
+    employee = get_current_employee(update, context)
+    language = _employee_language(employee, query.from_user)
+    await query.answer()
+
+    if employee is None or employee["application_status"] != "approved":
+        await query.edit_message_text(get_message(language, "not_approved"))
+        return
+    if employee["is_active"] != 1:
+        await query.edit_message_text(get_message(language, "access_disabled"))
+        return
+    if employee["is_on_shift"] != 1 or employee["role"] != "picker":
+        await query.edit_message_text(get_message(language, "wrong_role"))
+        return
+
+    try:
+        _, order_id_text, item_id_text, quantity_text = query.data.split(":", 3)
+        order_id = int(order_id_text)
+        item_id = int(item_id_text)
+        missing_quantity = int(quantity_text)
+    except (ValueError, IndexError):
+        await query.edit_message_text(get_message(language, "invalid_order"))
+        return
+
+    order = get_order_by_id(order_id)
+    if (
+        order is None
+        or order["status"] != "assembling"
+        or order["picker_id"] != employee["id"]
+    ):
+        await query.edit_message_text(get_message(language, "wrong_assembly_status"))
+        return
+
+    item = next(
+        (row for row in get_order_items(order_id) if row["id"] == item_id),
+        None,
+    )
+    if item is None:
+        await query.edit_message_text(get_message(language, "missing_item_not_found"))
+        return
+
+    result = mark_order_missing_item(
+        order_id,
+        employee["id"],
+        item["product_name"],
+        item_id=item_id,
+        missing_quantity=missing_quantity,
+    )
+    if not result["success"]:
+        await query.edit_message_text(
+            get_message(employee["language"], "stale_missing_item")
+        )
+        return
+
     await query.edit_message_text(
         get_message(
             employee["language"],
             "missing_item_recorded",
             order_number=result["order_number"],
-            item_name=f"{item['product_name']} — {item['quantity']} шт.",
+            item_name=item["product_name"],
+            missing_quantity=result["missing_quantity"],
+            remaining_quantity=result["remaining_quantity"],
         ),
-        reply_markup=keyboard,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                get_message(employee["language"], "complete_button"),
+                callback_data=f"complete_assembly:{order_id}",
+            )],
+            [InlineKeyboardButton(
+                get_message(employee["language"], "missing_button"),
+                callback_data=f"missing_item:{order_id}",
+            )],
+        ]),
+    )
+
+
+async def back_to_missing_items(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Возвращает список ещё не обработанных позиций."""
+    query = update.callback_query
+    employee = get_current_employee(update, context)
+    language = _employee_language(employee, query.from_user)
+    await query.answer()
+
+    if employee is None or employee["application_status"] != "approved":
+        await query.edit_message_text(get_message(language, "not_approved"))
+        return
+
+    try:
+        order_id = int(query.data.split(":")[1])
+    except (IndexError, ValueError):
+        await query.edit_message_text(get_message(language, "invalid_order"))
+        return
+
+    order = get_order_by_id(order_id)
+    if (
+        order is None
+        or order["status"] != "assembling"
+        or order["picker_id"] != employee["id"]
+    ):
+        await query.edit_message_text(get_message(language, "wrong_assembly_status"))
+        return
+
+    items = [
+        item
+        for item in get_order_items(order_id)
+        if item["quantity"] - item["missing_quantity"] > 0
+    ]
+    if not items:
+        await query.edit_message_text(
+            get_message(
+                employee["language"],
+                "missing_all_items_recorded",
+                order_number=order["order_number"],
+            ),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    get_message(employee["language"], "complete_button"),
+                    callback_data=f"complete_assembly:{order_id}",
+                )
+            ]]),
+        )
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(
+            f"❌ {item['product_name']} — "
+            f"{item['quantity'] - item['missing_quantity']} шт.",
+            callback_data=f"missing_item_select:{order_id}:{item['id']}",
+        )]
+        for item in items
+    ]
+    keyboard.append([InlineKeyboardButton(
+        "↩️ Назад к заказу",
+        callback_data=f"missing_item_back:{order_id}",
+    )])
+
+    await query.edit_message_text(
+        get_message(
+            employee["language"],
+            "missing_item_choose",
+            order_number=order["order_number"],
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
@@ -722,7 +989,7 @@ async def back_from_missing_item_selection(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """Возвращает карточку текущего заказа после отмены выбора позиции."""
+    """Возвращает полноценную карточку текущего заказа."""
     query = update.callback_query
     employee = get_current_employee(update, context)
     language = _employee_language(employee, query.from_user)
@@ -739,33 +1006,18 @@ async def back_from_missing_item_selection(
         return
 
     order = get_order_by_id(order_id)
-    if order is None or order["picker_id"] != employee["id"] or order["status"] != "assembling":
+    if (
+        order is None
+        or order["picker_id"] != employee["id"]
+        or order["status"] != "assembling"
+    ):
         await query.edit_message_text(get_message(language, "wrong_assembly_status"))
         return
 
-    items = get_order_items(order_id)
-    item_text = "\n".join(f"• {item['product_name']} — {item['quantity']} шт." for item in items) or "—"
-    payment_text = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
-    message = get_message(
-        employee["language"],
-        "picker_order",
-        order_number=order["order_number"],
-        client=order["client_name"],
-        phone=order["client_phone"],
-        address=order["delivery_address"],
-        items=item_text,
-        comment=(f"\n💬 Комментарий клиента:\n{order['client_comment']}\n" if order["client_comment"] else ""),
-        payment=payment_text,
-        amount=order["payment_amount"],
-    )
-    message += "\n" + get_message(employee["language"], "assembly_started_suffix")
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(get_message(employee["language"], "complete_button"), callback_data=f"complete_assembly:{order_id}"),
-            InlineKeyboardButton(get_message(employee["language"], "missing_button"), callback_data=f"missing_item:{order_id}"),
-        ]
-    ])
+    message, keyboard = await _render_picker_order_message(order, employee)
     await query.edit_message_text(message, reply_markup=keyboard)
+
+
 
 async def save_missing_item(
     update: Update,
