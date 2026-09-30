@@ -58,6 +58,8 @@ from handlers.orders import (
     start_assembly,
     complete_assembly,
     handle_missing_item,
+    select_missing_item,
+    back_from_missing_item_selection,
     show_picker_shift_report,
     notify_pickers_about_new_orders,
     MISSING_ITEM,
@@ -338,22 +340,26 @@ application.add_handler(
 # ТОВАРА НЕТ
 # ==========================================
 
-missing_item_handler = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(
-            handle_missing_item,
-            pattern=r"^missing_item:\d+$",
-        )
-    ],
-    states={
-        MISSING_ITEM: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, save_missing_item),
-        ],
-    },
-    fallbacks=[CommandHandler("cancel", cancel_missing_item)],
+application.add_handler(
+    CallbackQueryHandler(
+        handle_missing_item,
+        pattern=r"^missing_item:\d+$",
+    )
 )
-application.add_handler(missing_item_handler)
 
+application.add_handler(
+    CallbackQueryHandler(
+        select_missing_item,
+        pattern=r"^missing_item_select:\d+:\d+$",
+    )
+)
+
+application.add_handler(
+    CallbackQueryHandler(
+        back_from_missing_item_selection,
+        pattern=r"^missing_item_back:\d+$",
+    )
+)
 # ==========================================
 # НАБЛЮДЕНИЕ ЗА ТАЙМАУТАМИ ЗАКАЗОВ
 # ==========================================
