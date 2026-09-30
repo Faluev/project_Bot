@@ -237,11 +237,22 @@ def init_database():
 
             quantity INTEGER NOT NULL,
 
+            missing_quantity INTEGER NOT NULL DEFAULT 0,
+
             FOREIGN KEY (order_id)
                 REFERENCES orders(id)
                 ON DELETE CASCADE
         )
     """)
+
+    order_item_columns = [
+        row["name"]
+        for row in cursor.execute("PRAGMA table_info(order_items)").fetchall()
+    ]
+    if "missing_quantity" not in order_item_columns:
+        cursor.execute(
+            "ALTER TABLE order_items ADD COLUMN missing_quantity INTEGER NOT NULL DEFAULT 0"
+        )
 
     # ==========================================
     # 4. ИСТОРИЯ ДЕЙСТВИЙ
@@ -947,7 +958,8 @@ def get_order_items(order_id):
         SELECT
             id,
             product_name,
-            quantity
+            quantity,
+            missing_quantity
         FROM order_items
         WHERE order_id = ?
         ORDER BY id ASC
@@ -1269,9 +1281,18 @@ def complete_order_assembly(order_id, employee_id):
         connection.close()
 
 
-def mark_order_missing_item(order_id, employee_id, item_name):
+def mark_order_missing_item(
+    order_id,
+    employee_id,
+    item_name,
+    item_id=None,
+    missing_quantity=None,
+):
     """
-    Сборщик отмечает, что товара нет в наличии.
+    Фиксирует, сколько единиц конкретной позиции отсутствует.
+
+    Старый вызов (order_id, employee_id, item_name) сохраняется
+    для совместимости и отмечает всю оставшуюся позицию отсутствующей.
     """
     if not isinstance(item_name, str) or not item_name.strip():
         return {"success": False, "reason": "invalid_item_name"}
@@ -1299,7 +1320,6 @@ def mark_order_missing_item(order_id, employee_id, item_name):
             """,
             (order_id,),
         )
-
         order = cursor.fetchone()
 
         if order is None:
@@ -1317,6 +1337,64 @@ def mark_order_missing_item(order_id, employee_id, item_name):
         if order["picker_id"] != employee_id:
             connection.rollback()
             return {"success": False, "reason": "not_picker"}
+
+        item_query = """
+            SELECT id, product_name, quantity, missing_quantity
+            FROM order_items
+            WHERE order_id = ?
+        """
+        params = [order_id]
+        if item_id is not None:
+            item_query += " AND id = ?"
+            params.append(item_id)
+
+        cursor.execute(item_query, params)
+        item = cursor.fetchone()
+
+        if item is None:
+            connection.rollback()
+            return {"success": False, "reason": "item_not_found"}
+
+        if item["product_name"] != item_name:
+            connection.rollback()
+            return {"success": False, "reason": "item_not_found"}
+
+        remaining_quantity = item["quantity"] - item["missing_quantity"]
+        if remaining_quantity <= 0:
+            connection.rollback()
+            return {"success": False, "reason": "item_already_resolved"}
+
+        if missing_quantity is None:
+            missing_quantity = remaining_quantity
+
+        if (
+            not isinstance(missing_quantity, int)
+            or isinstance(missing_quantity, bool)
+            or missing_quantity < 1
+            or missing_quantity > remaining_quantity
+        ):
+            connection.rollback()
+            return {
+                "success": False,
+                "reason": "invalid_missing_quantity",
+                "remaining_quantity": remaining_quantity,
+            }
+
+        new_missing_quantity = item["missing_quantity"] + missing_quantity
+
+        cursor.execute(
+            """
+            UPDATE order_items
+            SET missing_quantity = ?
+            WHERE id = ?
+              AND order_id = ?
+            """,
+            (new_missing_quantity, item["id"], order_id),
+        )
+
+        if cursor.rowcount != 1:
+            connection.rollback()
+            return {"success": False, "reason": "update_failed"}
 
         cursor.execute(
             """
@@ -1351,12 +1429,26 @@ def mark_order_missing_item(order_id, employee_id, item_name):
                 "missing_item",
                 "assembling",
                 "assembling",
-                f"Сборщик отметил отсутствие позиции: {item_name}",
+                (
+                    "Сборщик отметил отсутствие позиции: "
+                    f"{item_name}; отсутствует: {missing_quantity} шт.; "
+                    f"всего: {item['quantity']} шт.; "
+                    f"отсутствовало ранее: {item['missing_quantity']} шт.; "
+                    f"осталось: {remaining_quantity - missing_quantity} шт."
+                ),
             ),
         )
 
         connection.commit()
-        return {"success": True, "order_number": order["order_number"]}
+        return {
+            "success": True,
+            "order_number": order["order_number"],
+            "item_id": item["id"],
+            "item_name": item["product_name"],
+            "missing_quantity": missing_quantity,
+            "remaining_quantity": remaining_quantity - missing_quantity,
+            "fully_missing": new_missing_quantity >= item["quantity"],
+        }
 
     except Exception:
         connection.rollback()
@@ -1364,7 +1456,6 @@ def mark_order_missing_item(order_id, employee_id, item_name):
 
     finally:
         connection.close()
-
 
 def reset_test_employee(telegram_id):
     connection = get_connection()
