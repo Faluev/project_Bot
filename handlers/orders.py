@@ -498,39 +498,39 @@ async def handle_missing_item(
     await query.answer()
 
     if employee is None:
-        await query.answer(get_message(language, "not_registered"), show_alert=True)
+        await query.edit_message_text(get_message(language, "not_registered"))
         return
 
     if employee["application_status"] != "approved":
-        await query.answer(get_message(language, "not_approved"), show_alert=True)
+        await query.edit_message_text(get_message(language, "not_approved"))
         return
 
     if employee["is_active"] != 1:
-        await query.answer(get_message(language, "access_disabled"), show_alert=True)
+        await query.edit_message_text(get_message(language, "access_disabled"))
         return
 
     if employee["is_on_shift"] != 1:
-        await query.answer(get_message(language, "start_shift"), show_alert=True)
+        await query.edit_message_text(get_message(language, "start_shift"))
         return
 
     if employee["role"] != "picker":
-        await query.answer(get_message(language, "picker_only"), show_alert=True)
+        await query.edit_message_text(get_message(language, "picker_only"))
         return
 
     try:
         order_id = int(query.data.split(":")[1])
     except (IndexError, ValueError):
-        await query.answer(get_message(language, "invalid_order"), show_alert=True)
+        await query.edit_message_text(get_message(language, "invalid_order"))
         return
 
     order = get_order_by_id(order_id)
     if order is None or order["status"] != "assembling" or order["picker_id"] != employee["id"]:
-        await query.answer(get_message(language, "wrong_assembly_status"), show_alert=True)
+        await query.edit_message_text(get_message(language, "wrong_assembly_status"))
         return
 
     items = get_order_items(order_id)
     if not items:
-        await query.answer("В заказе нет позиций.", show_alert=True)
+        await query.edit_message_text("В заказе нет позиций.")
         return
 
     keyboard = []
@@ -598,12 +598,12 @@ async def select_missing_item(
 
     item = next((row for row in get_order_items(order_id) if row["id"] == item_id), None)
     if item is None:
-        await query.answer(get_message(language, "missing_item_not_found"), show_alert=True)
+        await query.edit_message_text(get_message(language, "missing_item_not_found"))
         return
 
     result = mark_order_missing_item(order_id, employee["id"], item["product_name"])
     if not result["success"]:
-        await query.answer(get_message(language, "stale_missing_item"), show_alert=True)
+        await query.edit_message_text(get_message(language, "stale_missing_item"))
         return
 
     keyboard = InlineKeyboardMarkup([
