@@ -1319,8 +1319,7 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(update.message.reply_text.await_count, 2)
             first_markup = update.message.reply_text.await_args_list[0].kwargs["reply_markup"]
             first_labels = [button.text for row in first_markup.keyboard for button in row]
-            self.assertIn("🚚 Текущий заказ", first_labels)
-            self.assertNotIn("☰ Меню", first_labels)
+            self.assertEqual(first_labels, ["☰ Меню"])
             second_text = update.message.reply_text.await_args_list[1].args[0]
             self.assertIn("C-UI1", second_text)
 
