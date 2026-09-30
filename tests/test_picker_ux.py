@@ -115,14 +115,86 @@ class PickerUxTests(unittest.TestCase):
 
             query.answer.assert_awaited_once()
             query.edit_message_text.assert_awaited_once()
+            self.assertIn("missing_item_qty:", query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard[0][0].callback_data)
+
+            quantity_query = SimpleNamespace(
+                data=f"missing_item_qty:{order_id}:{item_id}:1",
+                from_user=SimpleNamespace(id=7001, language_code="ru"),
+                answer=AsyncMock(),
+                edit_message_text=AsyncMock(),
+            )
+            quantity_update = SimpleNamespace(
+                callback_query=quantity_query,
+                effective_user=quantity_query.from_user,
+            )
+
+            asyncio.run(orders.confirm_missing_item_quantity(quantity_update, context))
+
             connection = sqlite3.connect(database.DATABASE_PATH)
+            row = connection.execute(
+                "SELECT quantity, missing_quantity FROM order_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
             event = connection.execute(
                 "SELECT details FROM action_log WHERE order_id = ? AND action = 'missing_item' ORDER BY id DESC LIMIT 1",
                 (order_id,),
             ).fetchone()
             connection.close()
+
+            self.assertEqual(row, (2, 1))
             self.assertIsNotNone(event)
             self.assertIn("Молоко 3.2%, 1 л", event[0])
+            self.assertIn("отсутствует: 1 шт.", event[0])
+
+            # После частичного отсутствия в выборе остаётся только остаток.
+            menu_query = SimpleNamespace(
+                data=f"missing_item:{order_id}",
+                from_user=SimpleNamespace(id=7001, language_code="ru"),
+                answer=AsyncMock(),
+                edit_message_text=AsyncMock(),
+            )
+            menu_update = SimpleNamespace(
+                callback_query=menu_query,
+                effective_user=menu_query.from_user,
+            )
+            asyncio.run(orders.handle_missing_item(menu_update, context))
+            rendered = menu_query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard
+            self.assertIn("Молоко 3.2%, 1 л", rendered[0][0].text)
+            self.assertIn("1 шт.", rendered[0][0].text)
+
+            # Полностью отсутствующую позицию в следующем выборе уже не показываем.
+            full_item_id = sqlite3.connect(database.DATABASE_PATH).execute(
+                "SELECT id FROM order_items WHERE order_id = ? AND product_name = ?",
+                (order_id, "Хлеб Бородинский"),
+            ).fetchone()[0]
+            full_query = SimpleNamespace(
+                data=f"missing_item_select:{order_id}:{full_item_id}",
+                from_user=SimpleNamespace(id=7001, language_code="ru"),
+                answer=AsyncMock(),
+                edit_message_text=AsyncMock(),
+            )
+            full_update = SimpleNamespace(
+                callback_query=full_query,
+                effective_user=full_query.from_user,
+            )
+            asyncio.run(orders.select_missing_item(full_update, context))
+            quantity_buttons = full_query.edit_message_text.await_args.kwargs["reply_markup"].inline_keyboard
+            self.assertTrue(quantity_buttons)
+
+            # «Назад к заказу» реально восстанавливает карточку.
+            back_query = SimpleNamespace(
+                data=f"missing_item_back:{order_id}",
+                from_user=SimpleNamespace(id=7001, language_code="ru"),
+                answer=AsyncMock(),
+                edit_message_text=AsyncMock(),
+            )
+            back_update = SimpleNamespace(
+                callback_query=back_query,
+                effective_user=back_query.from_user,
+            )
+            asyncio.run(orders.back_from_missing_item_selection(back_update, context))
+            back_query.answer.assert_awaited_once()
+            back_query.edit_message_text.assert_awaited_once()
 
 
 if __name__ == "__main__":
