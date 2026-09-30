@@ -66,6 +66,30 @@ class OrderTimeoutTests(unittest.TestCase):
         self.assertEqual(bot.send_message.await_count, 1)
 
 
+    def test_admin_picker_mode_starts_picker_registration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/admin_picker_mode.db"
+            database.init_database()
+
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(
+                    id=999999999,
+                    language_code="ru",
+                ),
+                message=SimpleNamespace(
+                    text="👷 Сборщик",
+                    reply_text=AsyncMock(),
+                ),
+            )
+            context = SimpleNamespace(user_data={})
+
+            result = asyncio.run(
+                registration.start_registration(update, context)
+            )
+
+            self.assertEqual(result, registration.FIRST_LAST_NAME)
+            self.assertEqual(context.user_data["registration_role"], "picker")
+            update.message.reply_text.assert_awaited_once()
     def test_current_employee_lookup_is_role_aware(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/employee_role.db"
