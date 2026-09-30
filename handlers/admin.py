@@ -37,7 +37,7 @@ from database import (
 from config import ADMIN_TELEGRAM_ID, ORDER_TIMEOUT_MINUTES
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
-from handlers.menu import get_work_menu
+from handlers.menu import get_work_menu_compact
 
 
 async def answer_callback_safely(query, text=None, show_alert=False):
@@ -72,7 +72,7 @@ async def notify_employee_application_result(context, employee, text):
     try:
         reply_markup = None
         if employee["application_status"] == "approved":
-            reply_markup = get_work_menu(
+            reply_markup = get_work_menu_compact(
                 employee["role"],
                 employee["is_on_shift"],
                 employee["language"],
