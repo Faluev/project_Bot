@@ -46,5 +46,8 @@ async def toggle_shift(
             from handlers.courier_orders import show_courier_orders
             await show_courier_orders(update, context)
         elif employee["role"] == "picker":
-            from handlers.orders import show_current_orders
-            await show_current_orders(update, context)
+            # После начала смены сразу выдаём следующий заказ через тот же
+            # атомарный механизм уведомлений, который использует scheduler.
+            # Это исключает гонку с фоновым job и повторную карточку.
+            from handlers.orders import notify_next_order_to_picker
+            await notify_next_order_to_picker(context, employee)
