@@ -18,7 +18,8 @@ from handlers.menu import get_work_menu_compact, get_work_menu_expanded
 class PickerUxTests(unittest.TestCase):
     def test_work_menu_is_compact(self):
         menu = get_work_menu_compact("picker", True, "ru")
-        self.assertEqual(menu.keyboard, [["☰ Меню"]])
+        labels = [button.text for row in menu.keyboard for button in row]
+        self.assertEqual(labels, ["☰ Меню"])
 
     def test_expanded_work_menu_keeps_actions(self):
         menu = get_work_menu_expanded("picker", True, "ru")
