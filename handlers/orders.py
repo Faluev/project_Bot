@@ -18,6 +18,9 @@ from database import (
     get_employee_shift_report,
     get_on_shift_pickers,
     get_unnotified_new_orders,
+    claim_new_order_notification,
+    finalize_new_order_notification,
+    release_new_order_notification_claim,
     log_new_order_notification,
     get_picker_order_notification_messages,
 )
@@ -254,6 +257,9 @@ async def notify_next_order_to_picker(
         )
     ]])
 
+    if not claim_new_order_notification(order["id"], employee["id"]):
+        return False
+
     try:
         sent_message = await send_message_with_retry(
             context.bot,
@@ -262,13 +268,13 @@ async def notify_next_order_to_picker(
             reply_markup=keyboard,
         )
     except Exception:
+        release_new_order_notification_claim(order["id"], employee["id"])
         return False
 
-    log_new_order_notification(
-        order["id"],
-        employee["id"],
-        getattr(sent_message, "message_id", None),
-    )
+    message_id = getattr(sent_message, "message_id", None)
+    if not finalize_new_order_notification(order["id"], employee["id"], message_id):
+        release_new_order_notification_claim(order["id"], employee["id"])
+        return False
     return True
 
 
