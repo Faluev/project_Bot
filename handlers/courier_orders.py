@@ -341,11 +341,13 @@ async def show_courier_orders(
         # Если это ожидающий заказ без ранее отправленного уведомления,
         # фиксируем карточку, чтобы фоновая отправка её не продублировала.
         if order["status"] == "awaiting_courier":
-            log_courier_order_notification(
-                order["id"],
-                employee["id"],
-                getattr(sent_message, "message_id", None),
-            )
+            message_id = getattr(sent_message, "message_id", None)
+            if isinstance(message_id, int):
+                log_courier_order_notification(
+                    order["id"],
+                    employee["id"],
+                    message_id,
+                )
 
 
 async def handle_pickup_order(
