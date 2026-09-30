@@ -1442,8 +1442,36 @@ def mark_order_missing_item(
         item = cursor.fetchone()
 
         if item is None:
-            connection.rollback()
-            return {"success": False, "reason": "item_not_found"}
+            # Совместимость со старым API: прежние вызовы передавали
+            # только название позиции. В этом режиме сохраняем событие
+            # в журнале без количественного изменения order_items.
+            if item_id is not None:
+                connection.rollback()
+                return {"success": False, "reason": "item_not_found"}
+
+            cursor.execute(
+                """
+                INSERT INTO action_log (
+                    order_id, employee_id, action,
+                    old_status, new_status, details
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    employee_id,
+                    "missing_item",
+                    "assembling",
+                    "assembling",
+                    f"Сборщик отметил отсутствие позиции: {item_name}",
+                ),
+            )
+            connection.commit()
+            return {
+                "success": True,
+                "order_number": order["order_number"],
+                "item_name": item_name,
+            }
 
         if item["product_name"] != item_name:
             connection.rollback()
