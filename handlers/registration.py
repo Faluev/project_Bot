@@ -18,7 +18,7 @@ from database import (
     get_employee_by_telegram_id,
 )
 
-from handlers.menu import get_work_menu, get_admin_menu, get_admin_mode_menu, get_registration_menu
+from handlers.menu import get_work_menu_compact, get_admin_menu, get_admin_mode_menu, get_registration_menu
 from handlers.retry import send_message_with_retry
 from handlers.i18n import get_message
 from handlers.employee import get_current_employee
@@ -172,7 +172,7 @@ async def start_registration(
                 employee["role"],
             )
 
-            menu = get_work_menu(
+            menu = get_work_menu_compact(
                 employee["role"],
                 employee["is_on_shift"],
                 employee["language"],
