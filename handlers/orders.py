@@ -337,9 +337,70 @@ async def start_assembly(
     if not result["success"]:
 
         if result["reason"] == "picker_capacity_reached":
-            error_message = "⚠️ У вас уже есть заказ в сборке. Сначала завершите его."
-        else:
-            error_message = _order_action_error(language, result["reason"])
+            current_orders = get_orders_for_picker(employee["id"])
+            current_order = current_orders[0] if current_orders else None
+
+            if current_order is not None:
+                items = get_order_items(current_order["id"])
+                item_text = "\n".join(
+                    f"• {item['product_name']} — {item['quantity']} шт."
+                    for item in items
+                ) or "—"
+                comment = (
+                    f"\n💬 Комментарий клиента:\n{current_order['client_comment']}\n"
+                    if current_order["client_comment"]
+                    else ""
+                )
+                payment_text = (
+                    "Наличные"
+                    if current_order["payment_method"] == "cash"
+                    else current_order["payment_method"]
+                )
+                current_message = get_message(
+                    employee["language"],
+                    "picker_order",
+                    order_number=current_order["order_number"],
+                    client=current_order["client_name"],
+                    phone=current_order["client_phone"],
+                    address=current_order["delivery_address"],
+                    items=item_text,
+                    comment=comment,
+                    payment=payment_text,
+                    amount=current_order["payment_amount"],
+                    created_at=current_order["created_at"],
+                )
+                current_message += "\n" + get_message(
+                    employee["language"],
+                    "assembly_started_suffix",
+                )
+                current_keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "complete_button"),
+                        callback_data=f"complete_assembly:{current_order['id']}",
+                    ),
+                    InlineKeyboardButton(
+                        get_message(employee["language"], "missing_button"),
+                        callback_data=f"missing_item:{current_order['id']}",
+                    ),
+                ]])
+                await query.answer(
+                    "ℹ️ У вас уже есть заказ в сборке. Показываю его.",
+                )
+                try:
+                    await query.edit_message_text(
+                        current_message,
+                        reply_markup=current_keyboard,
+                    )
+                except Exception:
+                    pass
+            else:
+                await query.answer(
+                    "ℹ️ У вас уже есть активный заказ.",
+                    show_alert=True,
+                )
+            return
+
+        error_message = _order_action_error(language, result["reason"])
         await query.answer(
             error_message,
             show_alert=True,
