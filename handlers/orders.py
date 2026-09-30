@@ -181,9 +181,38 @@ async def show_current_orders(
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(
+        existing_messages = [
+            item
+            for item in get_picker_order_notification_messages(
+                order["id"],
+            )
+            if item["employee_id"] == employee["id"]
+        ]
+
+        if existing_messages:
+            message_id = existing_messages[-1]["message_id"]
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=employee["telegram_id"],
+                    message_id=message_id,
+                    text=message,
+                    reply_markup=reply_markup,
+                )
+                continue
+            except Exception:
+                pass
+
+        sent_message = await update.message.reply_text(
             message,
             reply_markup=reply_markup,
+        )
+
+        # Ручной просмотр тоже фиксируем как показанное уведомление,
+        # чтобы фоновые задачи не прислали эту же карточку повторно.
+        log_new_order_notification(
+            order["id"],
+            employee["id"],
+            getattr(sent_message, "message_id", None),
         )
 
 
