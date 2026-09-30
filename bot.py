@@ -59,6 +59,8 @@ from handlers.orders import (
     complete_assembly,
     handle_missing_item,
     select_missing_item,
+    confirm_missing_item_quantity,
+    back_to_missing_items,
     back_from_missing_item_selection,
     show_picker_shift_report,
     notify_pickers_about_new_orders,
@@ -351,6 +353,20 @@ application.add_handler(
     CallbackQueryHandler(
         select_missing_item,
         pattern=r"^missing_item_select:\d+:\d+$",
+    )
+)
+
+application.add_handler(
+    CallbackQueryHandler(
+        confirm_missing_item_quantity,
+        pattern=r"^missing_item_qty:\d+:\d+:\d+$",
+    )
+)
+
+application.add_handler(
+    CallbackQueryHandler(
+        back_to_missing_items,
+        pattern=r"^missing_item_back_to_items:\d+$",
     )
 )
 
