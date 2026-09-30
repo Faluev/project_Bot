@@ -2333,6 +2333,7 @@ def deliver_order(order_id, employee_id):
     Статус меняется с 'in_delivery' на 'delivered'.
     """
     connection = get_connection()
+    cursor = None
 
     try:
         cursor = connection.cursor()
