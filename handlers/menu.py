@@ -67,8 +67,11 @@ def get_work_menu_expanded(role, is_on_shift=False, language="ru"):
 
 
 def get_work_menu(role, is_on_shift=False, language="ru"):
-    """Совместимость: полное рабочее меню."""
-    return get_work_menu_expanded(role, is_on_shift, language)
+    """Компактное рабочее меню: одна кнопка, остальные действия раскрываются отдельно."""
+    return ReplyKeyboardMarkup(
+        [["\u2630 Меню"]],
+        resize_keyboard=True,
+    )
 
 
 def get_admin_mode_menu():
