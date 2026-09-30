@@ -13,3 +13,5 @@ __pycache__/
 delivery.db
 # Резервные копии базы данных
 backups/
+
+.venv311/
