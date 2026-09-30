@@ -328,6 +328,14 @@ async def show_courier_orders(
 
         if existing_messages:
             message_id = existing_messages[-1]["message_id"]
+            for stale_message in existing_messages[:-1]:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=employee["telegram_id"],
+                        message_id=stale_message["message_id"],
+                    )
+                except Exception:
+                    pass
             try:
                 await context.bot.edit_message_text(
                     chat_id=employee["telegram_id"],
