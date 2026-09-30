@@ -571,16 +571,16 @@ async def select_missing_item(
     await query.answer()
 
     if employee is None or employee["application_status"] != "approved":
-        await query.answer(get_message(language, "not_approved"), show_alert=True)
+        await query.edit_message_text(get_message(language, "not_approved"))
         return
     if employee["is_active"] != 1:
-        await query.answer(get_message(language, "access_disabled"), show_alert=True)
+        await query.edit_message_text(get_message(language, "access_disabled"))
         return
     if employee["is_on_shift"] != 1:
-        await query.answer(get_message(language, "start_shift"), show_alert=True)
+        await query.edit_message_text(get_message(language, "start_shift"))
         return
     if employee["role"] != "picker":
-        await query.answer(get_message(language, "picker_only"), show_alert=True)
+        await query.edit_message_text(get_message(language, "picker_only"))
         return
 
     try:
@@ -588,12 +588,12 @@ async def select_missing_item(
         order_id = int(order_id_text)
         item_id = int(item_id_text)
     except (ValueError, IndexError):
-        await query.answer(get_message(language, "invalid_order"), show_alert=True)
+        await query.edit_message_text(get_message(language, "invalid_order"))
         return
 
     order = get_order_by_id(order_id)
     if order is None or order["status"] != "assembling" or order["picker_id"] != employee["id"]:
-        await query.answer(get_message(language, "wrong_assembly_status"), show_alert=True)
+        await query.edit_message_text(get_message(language, "wrong_assembly_status"))
         return
 
     item = next((row for row in get_order_items(order_id) if row["id"] == item_id), None)
@@ -640,16 +640,16 @@ async def back_from_missing_item_selection(
     try:
         order_id = int(query.data.split(":")[1])
     except (IndexError, ValueError):
-        await query.answer(get_message(language, "invalid_order"), show_alert=True)
+        await query.edit_message_text(get_message(language, "invalid_order"))
         return
 
     if employee is None:
-        await query.answer(get_message(language, "not_registered"), show_alert=True)
+        await query.edit_message_text(get_message(language, "not_registered"))
         return
 
     order = get_order_by_id(order_id)
     if order is None or order["picker_id"] != employee["id"] or order["status"] != "assembling":
-        await query.answer(get_message(language, "wrong_assembly_status"), show_alert=True)
+        await query.edit_message_text(get_message(language, "wrong_assembly_status"))
         return
 
     items = get_order_items(order_id)
