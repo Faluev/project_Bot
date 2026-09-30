@@ -205,7 +205,7 @@ async def start_registration(
     # НОВАЯ РЕГИСТРАЦИЯ
     # ==========================================
 
-    if update.message.text not in ("🚀 Начать", "👷 Регистрация сборщика"):
+    if update.message.text not in ("🚀 Начать", "👷 Регистрация сборщика", "👷 Сборщик"):
         await update.message.reply_text(
             "👋 Добро пожаловать!\n\nНажмите «🚀 Начать», чтобы подать заявку.",
             reply_markup=get_registration_menu(),
