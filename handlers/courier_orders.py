@@ -312,10 +312,40 @@ async def show_courier_orders(
             keyboard
         )
 
-        await update.message.reply_text(
+        existing_messages = [
+            item
+            for item in get_courier_order_notification_messages(
+                order["id"],
+            )
+            if item["employee_id"] == employee["id"]
+        ]
+
+        if existing_messages:
+            message_id = existing_messages[-1]["message_id"]
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=employee["telegram_id"],
+                    message_id=message_id,
+                    text=message,
+                    reply_markup=reply_markup,
+                )
+                continue
+            except Exception:
+                pass
+
+        sent_message = await update.message.reply_text(
             message,
             reply_markup=reply_markup,
         )
+
+        # Если это ожидающий заказ без ранее отправленного уведомления,
+        # фиксируем карточку, чтобы фоновая отправка её не продублировала.
+        if order["status"] == "awaiting_courier":
+            log_courier_order_notification(
+                order["id"],
+                employee["id"],
+                getattr(sent_message, "message_id", None),
+            )
 
 
 async def handle_pickup_order(
