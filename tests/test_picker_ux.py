@@ -163,10 +163,12 @@ class PickerUxTests(unittest.TestCase):
             self.assertIn("1 шт.", rendered[0][0].text)
 
             # Полностью отсутствующую позицию в следующем выборе уже не показываем.
-            full_item_id = sqlite3.connect(database.DATABASE_PATH).execute(
+            check_connection = sqlite3.connect(database.DATABASE_PATH)
+            full_item_id = check_connection.execute(
                 "SELECT id FROM order_items WHERE order_id = ? AND product_name = ?",
                 (order_id, "Хлеб Бородинский"),
             ).fetchone()[0]
+            check_connection.close()
             full_query = SimpleNamespace(
                 data=f"missing_item_select:{order_id}:{full_item_id}",
                 from_user=SimpleNamespace(id=7001, language_code="ru"),
