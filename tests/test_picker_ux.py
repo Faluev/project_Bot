@@ -27,6 +27,41 @@ class PickerUxTests(unittest.TestCase):
         self.assertIn("📦 Текущие заказы", labels)
         self.assertIn("🟢 Завершить смену", labels)
 
+    def test_real_e2e_orders_have_chronological_creation_times(self):
+        from scripts.seed_e2e_orders import seed
+
+        original_path = database.DATABASE_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database.DATABASE_PATH = f"{temp_dir}/seed_orders.db"
+            try:
+                seed(reset=True)
+
+                connection = sqlite3.connect(database.DATABASE_PATH)
+                rows = connection.execute(
+                    "SELECT order_number, created_at FROM orders WHERE order_number LIKE 'E2E-REAL-%' ORDER BY created_at ASC"
+                ).fetchall()
+                connection.close()
+
+                self.assertEqual(len(rows), 10)
+                self.assertEqual(rows[0][0], "E2E-REAL-001")
+                self.assertEqual(rows[-1][0], "E2E-REAL-010")
+
+                timestamps = [row[1] for row in rows]
+                self.assertEqual(timestamps, sorted(timestamps))
+                self.assertNotEqual(timestamps[0], timestamps[-1])
+
+                from handlers.i18n import get_message
+                rendered = get_message(
+                    "ru", "picker_order", order_number=rows[0][0], created_at=rows[0][1],
+                    client="Мадина Саидова", phone="+992 90 100 1001",
+                    address="Душанбе, ул. Рудаки, 105, кв. 24",
+                    items="• Молоко 3.2%, 1 л — 2 шт.", comment="",
+                    payment="Наличные", amount=186.50,
+                )
+                self.assertIn(f"🕒 Оформлен: {rows[0][1]}", rendered)
+            finally:
+                database.DATABASE_PATH = original_path
+
     def test_missing_item_selection_logs_exact_order_item(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database.DATABASE_PATH = f"{temp_dir}/picker_ux.db"
