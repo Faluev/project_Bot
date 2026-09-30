@@ -7,7 +7,7 @@ MESSAGES = {
         "courier_order": "🚚 Заказ № {order_number}\n\n👤 Клиент: {client_name}\n📞 Телефон: {phone}\n\n📍 Адрес доставки:\n{address}\n{comment}\n💳 Оплата: {payment}\n💰 Сумма: {amount}\n",
         "empty_courier_orders": "🚚 Сейчас заказов для курьера нет.",
         "pickup_button": "🚚 Забрал заказ",
-        "picker_order": "📦 Заказ № {order_number}\n\n👤 Клиент: {client}\n📞 Телефон: {phone}\n\n📍 Адрес:\n{address}\n\n🛒 Товары:\n{items}{comment}\n💳 Оплата: {payment}\n💰 Сумма: {amount}\n",
+        "picker_order": "📦 Заказ № {order_number}\n\n🕒 Оформлен: {created_at}\n👤 Клиент: {client}\n📞 Телефон: {phone}\n\n📍 Адрес:\n{address}\n\n🛒 Товары:\n{items}{comment}\n💳 Оплата: {payment}\n💰 Сумма: {amount}\n",
         "start_assembly_button": "▶️ Начать сборку",
         "assembly_started": "🔨 Заказ № {order_number}\n\nВы начали сборку этого заказа.\n\nКогда закончите сборку, нажмите кнопку ниже.",
         "assembly_started_suffix": "🔨 Сборка заказа начата.\n\nКогда закончите сборку, нажмите кнопку ниже.",
