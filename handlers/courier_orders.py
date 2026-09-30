@@ -21,6 +21,9 @@ from database import (
     get_employee_shift_report,
     get_on_shift_couriers,
     get_unnotified_courier_orders,
+    claim_courier_order_notification,
+    finalize_courier_order_notification,
+    release_courier_order_notification_claim,
     log_courier_order_notification,
     get_courier_order_notification_messages,
 )
@@ -139,6 +142,9 @@ async def _send_courier_order_notification(bot, employee, order):
             callback_data=f"pickup_order:{order['id']}",
         )
     ]])
+    if not claim_courier_order_notification(order["id"], employee["id"]):
+        return
+
     try:
         sent_message = await send_message_with_retry(
             bot,
@@ -147,17 +153,17 @@ async def _send_courier_order_notification(bot, employee, order):
             reply_markup=keyboard,
         )
     except Exception:
+        release_courier_order_notification_claim(order["id"], employee["id"])
         logger.exception(
-            "Could not send courier notification: order=%s employee=%s",
+            "Could not send courier order notification: order=%s employee=%s",
             order["id"],
             employee["id"],
         )
         return
-    log_courier_order_notification(
-        order["id"],
-        employee["id"],
-        getattr(sent_message, "message_id", None),
-    )
+
+    message_id = getattr(sent_message, "message_id", None)
+    if not finalize_courier_order_notification(order["id"], employee["id"], message_id):
+        release_courier_order_notification_claim(order["id"], employee["id"])
 
 async def notify_couriers_about_waiting_orders(context: ContextTypes.DEFAULT_TYPE):
     """Мгновенно отправляет доступные заказы в курьерский бот."""
