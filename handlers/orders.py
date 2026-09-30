@@ -146,6 +146,7 @@ async def show_current_orders(
             comment=comment,
             payment=payment_text,
             amount=order["payment_amount"],
+            created_at=order["created_at"],
         )
 
         if order["status"] == "assembling":
