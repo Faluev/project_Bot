@@ -20,8 +20,9 @@ from database import (
     reject_order,
     get_employee_shift_report,
     get_on_shift_couriers,
-    get_unnotified_courier_orders,
+    claim_courier_order_notifications,
     log_courier_order_notification,
+    release_courier_order_notification,
     get_courier_order_notification_messages,
 )
 from handlers.i18n import get_message
@@ -29,6 +30,8 @@ from handlers.retry import send_message_with_retry
 
 logger = logging.getLogger(__name__)
 REJECTION_REASON = 6
+# Keep network retries within the database reservation lifetime.
+_COURIER_NOTIFICATION_SEND_TIMEOUT_SECONDS = 90
 
 _courier_notification_bot = None
 _courier_notification_bot_lock = asyncio.Lock()
@@ -114,7 +117,7 @@ async def clear_stale_courier_order_messages(context, order_id, employee_id):
             )
 
 
-async def _send_courier_order_notification(bot, employee, order):
+async def _send_courier_order_notification(bot, employee, order, claim_token):
     """Отправляет одну карточку курьеру через настоящий courier bot."""
     payment = "Наличные" if order["payment_method"] == "cash" else order["payment_method"]
     comment = (
@@ -140,11 +143,14 @@ async def _send_courier_order_notification(bot, employee, order):
         )
     ]])
     try:
-        sent_message = await send_message_with_retry(
-            bot,
-            chat_id=employee["telegram_id"],
-            text=text,
-            reply_markup=keyboard,
+        sent_message = await asyncio.wait_for(
+            send_message_with_retry(
+                bot,
+                chat_id=employee["telegram_id"],
+                text=text,
+                reply_markup=keyboard,
+            ),
+            timeout=_COURIER_NOTIFICATION_SEND_TIMEOUT_SECONDS,
         )
     except Exception:
         logger.exception(
@@ -152,12 +158,19 @@ async def _send_courier_order_notification(bot, employee, order):
             order["id"],
             employee["id"],
         )
+        release_courier_order_notification(order["id"], employee["id"], claim_token)
         return
-    log_courier_order_notification(
-        order["id"],
-        employee["id"],
-        getattr(sent_message, "message_id", None),
-    )
+
+    message_id = getattr(sent_message, "message_id", None)
+    if not log_courier_order_notification(
+        order["id"], employee["id"], message_id, claim_token=claim_token,
+    ) and message_id is not None:
+        # The order may have changed rounds while Telegram was responding.
+        try:
+            await bot.delete_message(chat_id=employee["telegram_id"], message_id=message_id)
+        except Exception:
+            logger.debug("Could not remove superseded courier notification", exc_info=True)
+
 
 async def notify_couriers_about_waiting_orders(context: ContextTypes.DEFAULT_TYPE):
     """Мгновенно отправляет доступные заказы в курьерский бот."""
@@ -171,8 +184,8 @@ async def notify_couriers_about_waiting_orders(context: ContextTypes.DEFAULT_TYP
         courier_bot = await _get_courier_notification_bot()
     tasks = []
     for employee in employees:
-        for order in get_unnotified_courier_orders(employee["id"]):
-            tasks.append(_send_courier_order_notification(courier_bot, employee, order))
+        for order, claim_token in claim_courier_order_notifications(employee["id"]):
+            tasks.append(_send_courier_order_notification(courier_bot, employee, order, claim_token))
     if tasks:
         await asyncio.gather(*tasks)
 

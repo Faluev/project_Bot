@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -366,7 +367,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.update_application_status(picker["id"], "approved")
             self.assertTrue(database.toggle_employee_shift(picker["id"]))
 
-            with sqlite3.connect(database.DATABASE_PATH) as connection:
+            with closing(sqlite3.connect(database.DATABASE_PATH)) as connection:
                 connection.execute(
                     """
                     INSERT INTO orders (
@@ -395,7 +396,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.update_application_status(courier["id"], "approved")
             self.assertTrue(database.toggle_employee_shift(courier["id"]))
 
-            with sqlite3.connect(database.DATABASE_PATH) as connection:
+            with closing(sqlite3.connect(database.DATABASE_PATH)) as connection:
                 connection.execute(
                     """
                     INSERT INTO orders (
@@ -423,7 +424,7 @@ class OrderTimeoutTests(unittest.TestCase):
             picker = database.get_employee_by_telegram_id(3030, "picker")
             database.update_application_status(picker["id"], "approved")
 
-            with sqlite3.connect(database.DATABASE_PATH) as connection:
+            with closing(sqlite3.connect(database.DATABASE_PATH)) as connection:
                 connection.execute(
                     """
                     INSERT INTO orders (
@@ -447,7 +448,7 @@ class OrderTimeoutTests(unittest.TestCase):
             self.assertEqual(order["status"], "new")
             self.assertIsNone(order["picker_id"])
 
-            with sqlite3.connect(database.DATABASE_PATH) as connection:
+            with closing(sqlite3.connect(database.DATABASE_PATH)) as connection:
                 action = connection.execute(
                     """
                     SELECT action, old_status, new_status
@@ -464,7 +465,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.DATABASE_PATH = f"{temp_dir}/timeout_escalation.db"
             database.init_database()
 
-            with sqlite3.connect(database.DATABASE_PATH) as connection:
+            with closing(sqlite3.connect(database.DATABASE_PATH)) as connection:
                 connection.execute(
                     """
                     INSERT INTO orders (
@@ -493,7 +494,7 @@ class OrderTimeoutTests(unittest.TestCase):
             database.DATABASE_PATH = f"{temp_dir}/timeout_waiting_courier.db"
             database.init_database()
 
-            with sqlite3.connect(database.DATABASE_PATH) as connection:
+            with closing(sqlite3.connect(database.DATABASE_PATH)) as connection:
                 connection.execute(
                     """
                     INSERT INTO orders (

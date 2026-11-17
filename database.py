@@ -1,4 +1,7 @@
 import sqlite3
+import time
+from contextlib import closing
+from uuid import uuid4
 
 from config import DATABASE_PATH
 
@@ -268,6 +271,17 @@ def init_database():
 
             FOREIGN KEY (employee_id)
                 REFERENCES employees(id)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS courier_notification_claims (
+            order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+            employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+            notification_round INTEGER NOT NULL,
+            token TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            PRIMARY KEY (order_id, employee_id)
         )
     """)
 
@@ -2090,108 +2104,155 @@ def get_on_shift_couriers():
         connection.close()
 
 
-def get_unnotified_courier_orders(employee_id):
-    """Возвращает только столько новых заказов, сколько помещается в загрузку."""
-    connection = get_connection()
+# Each new entry into the waiting state starts a fresh notification round.
+_COURIER_NOTIFICATION_ROUND = """
+    COALESCE((
+        SELECT MAX(id)
+        FROM action_log
+        WHERE order_id = o.id
+          AND new_status = 'awaiting_courier'
+          AND old_status <> 'awaiting_courier'
+    ), 0)
+"""
+_COURIER_NOTIFICATION_LEASE_SECONDS = 120
 
-    try:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS active_count
-            FROM orders
-            WHERE status = 'in_delivery'
-              AND courier_id = ?
-            """,
-            (employee_id,),
-        )
-        active_count = cursor.fetchone()["active_count"]
-        available_slots = max(0, MAX_COURIER_ACTIVE_ORDERS - active_count)
 
-        if available_slots == 0:
-            return []
-
-        cursor.execute(
-            """
-            SELECT
-                o.id,
-                o.order_number,
-                o.client_name,
-                o.client_phone,
-                o.delivery_address,
-                o.client_comment,
-                o.payment_method,
-                o.payment_amount
+def _unnotified_courier_orders(connection, employee_id):
+    return connection.execute(
+        f"""
+        WITH waiting_orders AS (
+            SELECT o.id, o.order_number, o.client_name, o.client_phone,
+                   o.delivery_address, o.client_comment, o.payment_method,
+                   o.payment_amount, o.created_at,
+                   {_COURIER_NOTIFICATION_ROUND} AS notification_round
             FROM orders o
             WHERE o.status = 'awaiting_courier'
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM action_log al
-                  WHERE al.order_id = o.id
-                    AND al.employee_id = ?
-                    AND al.action = 'courier_order_notification'
-                    AND al.id > COALESCE(
-                        (
-                            SELECT MAX(requeue.id)
-                            FROM action_log requeue
-                            WHERE requeue.order_id = o.id
-                              AND requeue.action = 'timeout_requeue'
-                              AND requeue.new_status = 'awaiting_courier'
-                        ),
-                        0
-                    )
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM orders assigned_order
-                  WHERE assigned_order.status = 'in_delivery'
-                    AND assigned_order.courier_id = ?
-              )
-            ORDER BY o.created_at ASC, o.id ASC
-            LIMIT ?
-            """,
-            (employee_id, employee_id, available_slots),
         )
-        return cursor.fetchall()
-    finally:
-        connection.close()
+        SELECT o.*
+        FROM waiting_orders o
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM action_log al
+            WHERE al.order_id = o.id
+              AND al.employee_id = ?
+              AND al.action = 'courier_order_notification'
+              AND al.id > o.notification_round
+        )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM orders assigned_order
+              WHERE assigned_order.status = 'in_delivery'
+                AND assigned_order.courier_id = ?
+          )
+        ORDER BY o.created_at ASC, o.id ASC
+        LIMIT ?
+        """,
+        (employee_id, employee_id, MAX_COURIER_ACTIVE_ORDERS),
+    ).fetchall()
 
 
-def log_courier_order_notification(order_id, employee_id, message_id=None):
-    connection = get_connection()
+def get_unnotified_courier_orders(employee_id):
+    with closing(get_connection()) as connection:
+        return _unnotified_courier_orders(connection, employee_id)
 
-    try:
-        cursor = connection.cursor()
+
+def claim_courier_order_notifications(employee_id):
+    """Reserve sends across bot processes before performing any network I/O."""
+    with closing(get_connection()) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
-        cursor.execute(
+        employee = connection.execute(
             """
+            SELECT 1 FROM employees
+            WHERE id = ? AND role = 'courier' AND application_status = 'approved'
+              AND is_active = 1 AND is_on_shift = 1
+            """,
+            (employee_id,),
+        ).fetchone()
+        if employee is None:
+            return []
+
+        claimed = []
+        now = int(time.time())
+        for order in _unnotified_courier_orders(connection, employee_id):
+            token = uuid4().hex
+            result = connection.execute(
+                """
+                INSERT INTO courier_notification_claims
+                    (order_id, employee_id, notification_round, token, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (order_id, employee_id) DO UPDATE SET
+                    notification_round = excluded.notification_round,
+                    token = excluded.token,
+                    expires_at = excluded.expires_at
+                WHERE courier_notification_claims.notification_round <> excluded.notification_round
+                   OR courier_notification_claims.expires_at <= ?
+                """,
+                (
+                    order["id"], employee_id, order["notification_round"],
+                    token, now + _COURIER_NOTIFICATION_LEASE_SECONDS, now,
+                ),
+            )
+            if result.rowcount == 1:
+                claimed.append((order, token))
+        return claimed
+
+
+def _release_courier_notification(connection, order_id, employee_id, claim_token):
+    connection.execute(
+        """
+        DELETE FROM courier_notification_claims
+        WHERE order_id = ? AND employee_id = ? AND token = ?
+        """,
+        (order_id, employee_id, claim_token),
+    )
+
+
+def release_courier_order_notification(order_id, employee_id, claim_token):
+    with closing(get_connection()) as connection, connection:
+        _release_courier_notification(connection, order_id, employee_id, claim_token)
+
+
+def log_courier_order_notification(order_id, employee_id, message_id=None, *, claim_token=None):
+    with closing(get_connection()) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        result = connection.execute(
+            f"""
             INSERT INTO action_log (
                 order_id, employee_id, action,
                 old_status, new_status, details
             )
-            SELECT ?, ?, 'courier_order_notification',
+            SELECT o.id, :employee_id, 'courier_order_notification',
                    'awaiting_courier', 'awaiting_courier',
-                   'Заказ отправлен курьеру' || CASE WHEN ? IS NOT NULL THEN ';message_id:' || ? ELSE '' END
-            WHERE EXISTS (
-                SELECT 1 FROM orders
-                WHERE id = ? AND status = 'awaiting_courier'
-            )
+                   'Заказ отправлен курьеру' ||
+                       CASE WHEN :message_id IS NOT NULL THEN ';message_id:' || :message_id ELSE '' END
+            FROM orders o
+            WHERE o.id = :order_id AND o.status = 'awaiting_courier'
+              AND (
+                  :claim_token IS NULL OR EXISTS (
+                      SELECT 1
+                      FROM courier_notification_claims claim
+                      WHERE claim.order_id = o.id
+                        AND claim.employee_id = :employee_id
+                        AND claim.token = :claim_token
+                        AND claim.notification_round = {_COURIER_NOTIFICATION_ROUND}
+                  )
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM action_log
-                  WHERE order_id = ?
-                    AND employee_id = ?
+                  WHERE order_id = o.id
+                    AND employee_id = :employee_id
                     AND action = 'courier_order_notification'
+                    AND id > {_COURIER_NOTIFICATION_ROUND}
               )
             """,
-            (order_id, employee_id, message_id, message_id, order_id, order_id, employee_id),
+            {
+                "order_id": order_id, "employee_id": employee_id,
+                "message_id": message_id, "claim_token": claim_token,
+            },
         )
-        connection.commit()
-        return cursor.rowcount == 1
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+        if claim_token is not None:
+            _release_courier_notification(connection, order_id, employee_id, claim_token)
+        return result.rowcount == 1
 
 
 def get_courier_order_notification_messages(order_id, exclude_employee_id=None):
